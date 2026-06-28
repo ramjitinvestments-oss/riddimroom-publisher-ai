@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, ArrowRight, ArrowLeft, Check, Plus, Trash2, Edit2, Loader2, Info, BookOpen } from 'lucide-react';
 import { Book, BookDetails } from '../types';
-import { generateWordSearch } from '../utils/puzzle';
+import { generateWordSearch, generateCrossword, generateTrivia, generateColoring, generateMaze, generateSudoku, generateCryptogram, generateWordScramble } from '../utils/puzzle';
 
 interface BookWizardProps {
   currentPlan: 'free' | 'creator' | 'publisher';
@@ -18,7 +18,7 @@ const TOPIC_SUGGESTIONS = [
 export default function BookWizard({ currentPlan, onBookCreated, onCancel }: BookWizardProps) {
   const [step, setStep] = useState(1);
   const [topic, setTopic] = useState('');
-  const [bookType, setBookType] = useState<'word_search'>('word_search');
+  const [bookType, setBookType] = useState<'wordsearch' | 'crossword' | 'trivia' | 'coloring' | 'mixed' | 'maze' | 'sudoku' | 'cryptogram' | 'wordscramble'>('wordsearch');
   const [audience, setAudience] = useState<'kids' | 'teens' | 'adults' | 'seniors'>('adults');
   const [puzzleCount, setPuzzleCount] = useState<number>(30);
   const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard' | 'mixed'>('medium');
@@ -30,10 +30,11 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const handleNextStep = () => {
     if (step === 1 && !topic) {
-      alert('Please enter a topic to continue.');
+      setModalError('Please enter a topic to continue.');
       return;
     }
     if (step === 4) {
@@ -134,7 +135,8 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
           audience,
           difficulty,
           trimSize: '8.5x11',
-          puzzleCount
+          puzzleCount,
+          bookType
         })
       });
 
@@ -157,25 +159,107 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
           (p: any) => p.category.toLowerCase() === catName.toLowerCase()
         ) || generatedData.puzzlesContent?.[i];
 
-        const wordBank = aiPuzzleData?.wordBank || [
-          'VIBRANT', 'EXPLORE', 'RIDDIM', 'ROOTS', 'CULTURE', 'WISDOM', 
-          'ENERGY', 'PEACE', 'SOUND', 'NATURE', 'JOURNEY', 'CREATIVE'
-        ];
+        // Solve and build grid depending on bookType or mixed rotations!
+        let currentType = bookType;
+        if (bookType === 'mixed') {
+          const rotationTypes: ('wordsearch' | 'crossword' | 'trivia' | 'coloring' | 'maze' | 'sudoku' | 'cryptogram' | 'wordscramble')[] = [
+            'wordsearch', 'crossword', 'trivia', 'coloring', 'maze', 'sudoku', 'cryptogram', 'wordscramble'
+          ];
+          currentType = rotationTypes[i % rotationTypes.length];
+        }
 
-        // Solve and build grid
-        const puzzle = generateWordSearch(
-          catName, 
-          wordBank, 
-          difficulty, 
-          largePrint ? 14 : 16
-        );
-
-        puzzlesList.push({
-          id: `puz_${Math.random().toString(36).substring(2, 9)}`,
-          ...puzzle,
-          funFact: aiPuzzleData?.funFact || `An awesome grid exploring the roots of ${catName}.`,
-          definition: aiPuzzleData?.definition || `Themed words representing ${catName}.`
-        });
+        if (currentType === 'crossword') {
+          const clues = aiPuzzleData?.clues || [
+            { clue: 'Dynamic lifestyle energy', answer: 'VIBES' },
+            { clue: 'Musical cadence and drum patterns', answer: 'RIDDIM' },
+            { clue: 'Foundational heritage and lineage', answer: 'ROOTS' },
+            { clue: 'Spiritual understanding and knowledge', answer: 'WISDOM' },
+            { clue: 'Auditory wave transmissions', answer: 'SOUND' },
+            { clue: 'State of mental tranquility and calm', answer: 'PEACE' },
+            { clue: 'Vast biological wilderness environment', answer: 'NATURE' },
+            { clue: 'A sequential traversal through time', answer: 'JOURNEY' }
+          ];
+          const puzzle = generateCrossword(catName, clues, 15);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? "${catName}" crossword solving improves spatial memory.`,
+            definition: aiPuzzleData?.definition || `Solving crosswords is a perfect way to reinforce ${catName} vocabulary.`
+          });
+        } else if (currentType === 'trivia') {
+          const questions = aiPuzzleData?.questions || [
+            { question: `Which aspect of "${catName}" is considered the most historically significant?`, answer: 'Heritage', options: ['Heritage', 'Modern Era', 'Commercialization', 'Folk Legend'] },
+            { question: `How does "${catName}" primarily influence modern pop culture trends?`, answer: 'Music', options: ['Music', 'Literature', 'Visual Art', 'Fashion Trends'] },
+            { question: `Which geographic region is most famous for its association with "${topic}"?`, answer: 'Caribbean', options: ['Caribbean', 'North Europe', 'Far East Asia', 'East Africa'] },
+            { question: `What is the core philosophical message behind "${catName}" sub-themes?`, answer: 'Unity', options: ['Unity', 'Competition', 'Solitude', 'Industrialization'] }
+          ];
+          const puzzle = generateTrivia(catName, questions);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? Trivia sheets on ${catName} boost cognitive recall.`,
+            definition: aiPuzzleData?.definition || `An educational assessment of your knowledge on ${catName}.`
+          });
+        } else if (currentType === 'coloring') {
+          const colorType = aiPuzzleData?.coloringType || ['geometric', 'mandala', 'nature', 'abstract'][i % 4];
+          const puzzle = generateColoring(catName, colorType as any);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `An exquisite ${colorType} coloring layout.`,
+            definition: aiPuzzleData?.definition || `Relax and color this amazing theme: ${catName}.`
+          });
+        } else if (currentType === 'maze') {
+          const puzzle = generateMaze(catName, difficulty);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? Navigating mazes boosts spatial coordination and problem solving.`,
+            definition: aiPuzzleData?.definition || `Find your way through this thematic labyrinth representing ${catName}.`
+          });
+        } else if (currentType === 'sudoku') {
+          const puzzle = generateSudoku(catName, difficulty);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? Sudoku was popularized in Japan and trains deep logical reasoning.`,
+            definition: aiPuzzleData?.definition || `Place numbers 1-9 without duplicates in any row, column, or 3x3 block.`
+          });
+        } else if (currentType === 'cryptogram') {
+          const phrase = aiPuzzleData?.cryptogramPhrase || `EXPLORING THE AMAZING CORE OF ${catName.toUpperCase()} REVEALS EXTRAORDINARY CULTURAL VALUE.`;
+          const hint = aiPuzzleData?.cryptogramHint || `Reflecting on the deeper meaning of ${catName}.`;
+          const puzzle = generateCryptogram(catName, phrase, hint);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? Cryptograms were originally used for military cryptography in ancient times.`,
+            definition: aiPuzzleData?.definition || `Decipher the encrypted letters to reveal a hidden thematic quote.`
+          });
+        } else if (currentType === 'wordscramble') {
+          const scrambleWords = aiPuzzleData?.scrambleWords || [
+            'VIBRANT', 'EXPLORE', 'RIDDIM', 'ROOTS', 'CULTURE', 'WISDOM', 'ENERGY', 'PEACE'
+          ];
+          const puzzle = generateWordScramble(catName, scrambleWords);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `Did you know? Solving scrambled words improves lexicographical recognition and spelling.`,
+            definition: aiPuzzleData?.definition || `Unscramble each set of letters to find words relating to ${catName}.`
+          });
+        } else {
+          // wordsearch
+          const wordBank = aiPuzzleData?.wordBank || [
+            'VIBRANT', 'EXPLORE', 'RIDDIM', 'ROOTS', 'CULTURE', 'WISDOM', 
+            'ENERGY', 'PEACE', 'SOUND', 'NATURE', 'JOURNEY', 'CREATIVE'
+          ];
+          const puzzle = generateWordSearch(catName, wordBank, difficulty, largePrint ? 14 : 16);
+          puzzlesList.push({
+            id: `puz_${Math.random().toString(36).substring(2, 9)}`,
+            ...puzzle,
+            funFact: aiPuzzleData?.funFact || `An awesome grid exploring the roots of ${catName}.`,
+            definition: aiPuzzleData?.definition || `Themed words representing ${catName}.`
+          });
+        }
       }
 
       // Step C: Package full Book details object
@@ -201,12 +285,23 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
           puzzleCount,
           audience,
           difficulty,
-          largePrint
+          largePrint,
+          bookType
         }
       };
 
+      let bookTitleSuffix = 'Puzzle Book';
+      if (bookType === 'crossword') bookTitleSuffix = 'Crossword Puzzle Book';
+      else if (bookType === 'trivia') bookTitleSuffix = 'Trivia Quiz Book';
+      else if (bookType === 'coloring') bookTitleSuffix = 'Coloring Book';
+      else if (bookType === 'mixed') bookTitleSuffix = 'Mixed Activity Workbook';
+      else if (bookType === 'maze') bookTitleSuffix = 'Labyrinth Maze Book';
+      else if (bookType === 'sudoku') bookTitleSuffix = 'Sudoku Puzzle Book';
+      else if (bookType === 'cryptogram') bookTitleSuffix = 'Cryptogram Cipher Book';
+      else if (bookType === 'wordscramble') bookTitleSuffix = 'Word Scramble Puzzle Book';
+
       const newBookPayload: Partial<Book> = {
-        title: `${topic} Word Search Puzzle Book`,
+        title: `${topic} ${bookTitleSuffix}`,
         topic,
         status: 'ready',
         details: fullBookDetails
@@ -231,7 +326,7 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
     } catch (e: any) {
       clearInterval(interval);
       setIsLoading(false);
-      alert(`Generation failed: ${e.message}. Please retry.`);
+      setModalError(`Generation failed: ${e.message}. Please retry.`);
     }
   };
 
@@ -341,37 +436,47 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
               Select Book Type
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-4 border-2 border-emerald-500 bg-emerald-500/[0.02] rounded-2xl flex items-start gap-3">
-                <span className="p-2 bg-emerald-600 text-white rounded-xl">
-                  <BookOpen className="w-5 h-5" />
-                </span>
-                <div>
-                  <h4 className="text-sm font-black text-white">Word Search Book</h4>
-                  <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed font-medium">
-                    Generate vocabulary matrix grids complete with definitions, trivia, and answer sheets.
-                  </p>
-                  <span className="inline-block mt-2.5 px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-[#10B981] text-[9px] uppercase tracking-wider font-extrabold rounded">
-                    Fully Active
-                  </span>
-                </div>
-              </div>
-
-              {['Crossword Book', 'Trivia Book', 'Coloring Book', 'Mixed Activities'].map((placeholder) => (
-                <div key={placeholder} className="p-4 border border-emerald-950/80 rounded-2xl flex items-start gap-3 opacity-45 bg-[#020906]/60">
-                  <span className="p-2 bg-emerald-950/40 text-emerald-800 rounded-xl">
-                    <BookOpen className="w-5 h-5" />
-                  </span>
-                  <div>
-                    <h4 className="text-sm font-bold text-zinc-500">{placeholder}</h4>
-                    <p className="text-xs text-zinc-600 mt-0.5 leading-relaxed font-medium">
-                      Staged for subsequent core rollout schedules.
-                    </p>
-                    <span className="inline-block mt-2.5 px-2 py-0.5 bg-emerald-950/80 text-zinc-500 text-[9px] uppercase tracking-wider font-bold rounded">
-                      Locked Roadmap
+              {([
+                { id: 'wordsearch', label: 'Word Search Book', desc: 'Generate vocabulary matrix grids complete with definitions, trivia, and answer sheets.' },
+                { id: 'crossword', label: 'Crossword Book', desc: 'Generate intersecting crossword word grids with clues and full solution keys.' },
+                { id: 'trivia', label: 'Trivia Book', desc: 'Generate multiple-choice trivia question sheets with comprehensive answer key pages.' },
+                { id: 'coloring', label: 'Coloring Book', desc: 'Generate beautiful procedural vector pattern sheets (geometric, mandala, abstract) for coloring.' },
+                { id: 'maze', label: 'Maze Book', desc: 'Generate mind-challenging procedurally carved paths with solutions.' },
+                { id: 'sudoku', label: 'Sudoku Book', desc: 'Generate standard 9x9 Sudoku puzzles with block regions and solution keys.' },
+                { id: 'cryptogram', label: 'Cryptogram Book', desc: 'Generate letter substitution cipher puzzle sheets with hint systems.' },
+                { id: 'wordscramble', label: 'Word Scramble Book', desc: 'Generate themed jumbled-letter list sheets with unscrambled answer keys.' },
+                { id: 'mixed', label: 'Mixed Activities', desc: 'A premium combination workbook distributing all activities evenly across the requested page count.' }
+              ] as const).map((typeOpt) => {
+                const isSelected = bookType === typeOpt.id;
+                return (
+                  <button
+                    key={typeOpt.id}
+                    onClick={() => setBookType(typeOpt.id)}
+                    className={`p-4 border-2 rounded-2xl flex items-start gap-3 text-left transition-all ${
+                      isSelected
+                        ? 'border-emerald-500 bg-emerald-500/[0.04] ring-2 ring-emerald-500/20'
+                        : 'border-emerald-950/80 hover:bg-emerald-950/40 bg-[#020906]/30'
+                    }`}
+                  >
+                    <span className={`p-2 rounded-xl shrink-0 ${isSelected ? 'bg-emerald-600 text-white' : 'bg-emerald-950/40 text-emerald-600'}`}>
+                      <BookOpen className="w-5 h-5" />
                     </span>
-                  </div>
-                </div>
-              ))}
+                    <div className="flex-1">
+                      <h4 className="text-sm font-black text-white">{typeOpt.label}</h4>
+                      <p className="text-xs text-zinc-400 mt-1 leading-relaxed font-medium">
+                        {typeOpt.desc}
+                      </p>
+                      <span className={`inline-block mt-2.5 px-2 py-0.5 text-[9px] uppercase tracking-wider font-extrabold rounded ${
+                        isSelected 
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-[#10B981]' 
+                          : 'bg-emerald-950/60 border border-emerald-950 text-emerald-500/60'
+                      }`}>
+                        {isSelected ? 'Selected' : 'Active'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </motion.div>
         )}
@@ -622,6 +727,26 @@ export default function BookWizard({ currentPlan, onBookCreated, onCancel }: Boo
           </button>
         )}
       </div>
+
+      {/* Custom Modal Error Dialog */}
+      {modalError && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#030d08] border border-red-900/40 rounded-3xl max-w-sm w-full p-6 text-zinc-100 shadow-2xl relative overflow-hidden animate-in fade-in duration-150 flex flex-col items-center text-center">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-red-600"></div>
+            <div className="w-12 h-12 rounded-full bg-red-950/40 border border-red-900/40 flex items-center justify-center mb-4">
+              <span className="text-red-500 font-bold text-xl">!</span>
+            </div>
+            <h4 className="text-sm font-black text-white uppercase tracking-wider mb-2">Attention Required</h4>
+            <p className="text-xs text-zinc-400 leading-relaxed mb-6">{modalError}</p>
+            <button
+              onClick={() => setModalError(null)}
+              className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white transition text-xs font-bold"
+            >
+              Acknowledge & Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

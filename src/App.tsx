@@ -15,11 +15,19 @@ import BookPreview from './components/BookPreview';
 import Dashboard from './components/Dashboard';
 import BrandLogo from './components/BrandLogo';
 
+import { doc, onSnapshot, updateDoc, increment } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
+import { db, auth } from './utils/firebase';
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [books, setBooks] = useState<Book[]>([]);
-  const [currentPlan, setCurrentPlan] = useState<'free' | 'creator' | 'publisher'>('free');
+  const [currentPlan, setCurrentPlan] = useState<'free' | 'creator' | 'publisher' | 'admin'>('free');
   
+  // Account status and permissions
+  const [isAccountDisabled, setIsAccountDisabled] = useState(false);
+  const [userPermissions, setUserPermissions] = useState({ bookGenerator: true, coverGenerator: true, aiCredits: true });
+
   // View states
   const [activeScreen, setActiveScreen] = useState<'bookshelf' | 'wizard' | 'admin'>('bookshelf');
   const [activeBook, setActiveBook] = useState<Book | null>(null);
@@ -35,26 +43,54 @@ export default function App() {
     if (cachedUser) {
       const parsed = JSON.parse(cachedUser);
       setUser(parsed);
-      fetchPlanState(parsed.uid);
     }
   }, []);
 
-  // Fetch plan status from server
-  const fetchPlanState = async (uid?: string) => {
-    const activeUid = uid || user?.uid;
-    if (!activeUid) return;
-    try {
-      const res = await fetch('/api/user/plan', {
-        headers: { 'x-user-uid': activeUid }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentPlan(data.plan);
+  // Listen to the user's document in Firestore in real-time
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        
+        // Update user state with fresh Firestore values
+        setUser(prev => prev ? {
+          ...prev,
+          plan: data.plan?.toLowerCase() as any,
+          enabled: data.enabled,
+          role: data.role,
+          displayName: data.displayName,
+          photoURL: data.photoURL,
+          booksCreated: data.booksCreated,
+          booksDownloaded: data.booksDownloaded,
+          lastActivity: data.lastActivity,
+          notes: data.notes,
+          usage: data.usage
+        } : null);
+
+        // Update plan state
+        const planVal = data.plan?.toLowerCase() as any;
+        setCurrentPlan(planVal || 'free');
+
+        // Update disabled state
+        const isDisabled = data.enabled === false;
+        setIsAccountDisabled(isDisabled);
+
+        // Set user permissions based on enabled status
+        setUserPermissions({
+          bookGenerator: data.enabled !== false,
+          coverGenerator: data.enabled !== false,
+          aiCredits: data.enabled !== false
+        });
       }
-    } catch (e) {
-      console.error('Error fetching plan:', e);
-    }
-  };
+    }, (error) => {
+      console.error("Error listening to user document:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user?.uid]);
 
   // Fetch user's books
   const fetchBooks = async (uid?: string) => {
@@ -66,8 +102,11 @@ export default function App() {
         headers: { 'x-user-uid': activeUid }
       });
       if (res.ok) {
-        const data = await res.json();
-        setBooks(data);
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          setBooks(data);
+        }
       }
     } catch (e) {
       console.error('Error fetching books:', e);
@@ -78,9 +117,8 @@ export default function App() {
   useEffect(() => {
     if (user) {
       fetchBooks(user.uid);
-      fetchPlanState(user.uid);
     }
-  }, [user]);
+  }, [user?.uid]);
 
   // Handlers
   const handleLoginSuccess = (loggedInUser: User) => {
@@ -88,17 +126,34 @@ export default function App() {
     localStorage.setItem('riddim_auth_user', JSON.stringify(loggedInUser));
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error('Error logging out from Firebase:', e);
+    }
     setUser(null);
     localStorage.removeItem('riddim_auth_user');
     setActiveScreen('bookshelf');
     setActiveBook(null);
   };
 
-  const handleBookCreated = (newBook: Book) => {
+  const handleBookCreated = async (newBook: Book) => {
     setBooks([newBook, ...books]);
     setActiveBook(newBook);
     setActiveScreen('bookshelf'); // reset screens
+
+    // Increment booksCreated count in Firestore
+    if (user?.uid) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid), {
+          booksCreated: increment(1),
+          lastActivity: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error('Error incrementing booksCreated count:', err);
+      }
+    }
   };
 
   const handleDuplicateBook = async (id: string) => {
@@ -124,9 +179,12 @@ export default function App() {
   };
 
   const handleDeleteBook = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this publication? This action is irreversible.')) {
-      return;
-    }
+    // Development mode: skip browser confirm in AI Studio Preview
+const confirmed = true;
+
+if (!confirmed) {
+  return;
+}
     try {
       const res = await fetch(`/api/books/${id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -270,7 +328,46 @@ export default function App() {
       {/* BODY MAIN SECTION */}
       <main className="max-w-7xl mx-auto px-6 py-8">
         <AnimatePresence mode="wait">
-          {isLoadingBooks ? (
+          {isAccountDisabled ? (
+            <div className="max-w-xl mx-auto py-12 text-center">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="p-8 rounded-3xl bg-[#030d08] border border-red-950/80 text-zinc-100 shadow-2xl relative overflow-hidden"
+              >
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-red-600 via-orange-500 to-red-600"></div>
+                
+                <ShieldAlert className="w-16 h-16 text-red-500 mx-auto animate-bounce mb-6" />
+                <h2 className="text-xl font-black text-white uppercase tracking-wider">Account Disabled</h2>
+                
+                <p className="text-sm text-zinc-400 mt-4 leading-relaxed">
+                  Your account has been disabled. Please contact support.
+                </p>
+
+                <div className="my-6 p-4 bg-red-950/15 border border-red-950 rounded-2xl text-left text-xs text-zinc-300 font-mono">
+                  <p className="font-extrabold text-red-400 mb-1">SYSTEM DIAGNOSTIC:</p>
+                  <p>• Auth UID: {user?.uid}</p>
+                  <p>• Account Email: {user?.email}</p>
+                  <p>• Access Policy Status: SUSPENDED</p>
+                </div>
+
+                <p className="text-xs text-zinc-400">
+                  Please contact the primary administrator at{' '}
+                  <a href="mailto:ramjitinvestments@gmail.com" className="text-[#D4AF37] font-bold hover:underline">
+                    ramjitinvestments@gmail.com
+                  </a>{' '}
+                  to request account restoration.
+                </p>
+
+                <button
+                  onClick={handleLogout}
+                  className="mt-8 px-6 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-900 transition text-xs font-bold"
+                >
+                  Log Out of Session
+                </button>
+              </motion.div>
+            </div>
+          ) : isLoadingBooks ? (
             <div className="flex flex-col items-center justify-center py-20">
               <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
               <p className="text-xs text-zinc-400 mt-2 font-mono">Loading operations database...</p>

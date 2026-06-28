@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'plan', 'enabled', 'role']) &&
+        data.uid is string &&
+        data.email is string &&
+        data.plan in ['Free', 'Creator', 'Publisher', 'Admin'] &&
+        data.enabled is bool &&
+        data.role in ['user', 'admin'];
+    }
+
+    function isValidLog(data) {
+      return data.keys().hasAll(['timestamp', 'message', 'category']) &&
+        data.timestamp is string &&
+        data.message is string &&
+        data.category is string;
+    }
+
+    // Rules for users collection
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      
+      // Creating is allowed for owner during signup or first time loading, or admin
+      allow create: if (isOwner(uid) && isValidUser(request.resource.data) && (
+        (request.resource.data.email == 'RamjitInvestments@gmail.com' && request.resource.data.role == 'admin' && request.resource.data.plan == 'Admin') ||
+        (request.resource.data.email == 'ramjitinvestments@gmail.com' && request.resource.data.role == 'admin' && request.resource.data.plan == 'Admin') ||
+        (request.resource.data.role == 'user' && request.resource.data.plan == 'Free')
+      )) || isAdmin();
+      
+      // Updates are restricted. Only admin can change plan, role, or enabled status.
+      // Owners can update displayName, photoURL, lastLogin, lastActivity, notes, usage, booksCreated, booksDownloaded.
+      allow update: if isAdmin() || (
+        isOwner(uid) && 
+        isValidUser(request.resource.data) &&
+        // Protect roles, plans, and enabled from unauthorized self-elevation or self-disabling
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.plan == resource.data.plan &&
+        request.resource.data.enabled == resource.data.enabled &&
+        request.resource.data.enabled == true
+      );
+      
+      // Only admins can delete, and only if it's not the final admin (we'll implement this constraint on the client too)
+      allow delete: if isAdmin() && uid != request.auth.uid;
+    }
+
+    // Rules for activity_logs collection
+    match /activity_logs/{logId} {
+      allow read: if isAdmin();
+      // Any authenticated user can create log entries
+      allow create: if isAuthenticated() && isValidLog(request.resource.data);
+      allow update, delete: if false; // Logs are write-once/immutable
+    }
+  }
+}

@@ -41,64 +41,24 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
   const [dragActive, setDragActive] = useState(false);
   
   // Crop & Trim state
-  const [cropTop, setCropTop] = useState(16);
-  const [cropBottom, setCropBottom] = useState(14);
+  const [cropTop, setCropTop] = useState(0);
+  const [cropBottom, setCropBottom] = useState(0);
   const [isCropping, setIsCropping] = useState(false);
+  const [originalImageUrl, setOriginalImageUrl] = useState<string | undefined>(
+    book.details.cover.originalImageUrl || book.details.cover.uploadedImageUrl
+  );
+  const [trimStatus, setTrimStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOriginalImageUrl(book.details.cover.originalImageUrl || book.details.cover.uploadedImageUrl);
+    setCropTop(0);
+    setCropBottom(0);
+    setTrimStatus(null);
+  }, [book.id, book.details.cover.originalImageUrl, book.details.cover.uploadedImageUrl]);
 
   // Trim sizes local states
   const [trimSize, setTrimSize] = useState<'8.5x11' | '8x10' | '6x9'>(book.details.settings.trimSize || '8.5x11');
   const [largePrint, setLargePrint] = useState(book.details.settings.largePrint);
-  
-  // Auto-trim legacy screenshot uploads
-  useEffect(() => {
-    if (uploadedImageUrl && uploadedImageUrl.startsWith('data:image/')) {
-      const img = new window.Image();
-      img.onload = () => {
-        const aspect = img.width / img.height;
-        if (aspect < 0.65) {
-          console.log('[Auto-Crop Effect] Untrimmed screenshot detected. Cropping top 16% and bottom 14%...');
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const cropTopPx = Math.floor(img.height * 0.16);
-            const cropBottomPx = Math.floor(img.height * 0.14);
-            const targetHeight = img.height - cropTopPx - cropBottomPx;
-            if (targetHeight > 0) {
-              canvas.width = img.width;
-              canvas.height = targetHeight;
-              ctx.drawImage(
-                img,
-                0, cropTopPx, img.width, targetHeight,
-                0, 0, img.width, targetHeight
-              );
-              const cropped = canvas.toDataURL('image/jpeg', 0.95);
-              setUploadedImageUrl(cropped);
-              
-              // Save cropped version back to server
-              const updated = {
-                ...book,
-                details: {
-                  ...book.details,
-                  cover: {
-                    ...book.details.cover,
-                    uploadedImageUrl: cropped,
-                  }
-                }
-              };
-              fetch('/api/books', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updated)
-              }).then(() => {
-                onBookUpdated(updated);
-              }).catch(err => console.error(err));
-            }
-          }
-        }
-      };
-      img.src = uploadedImageUrl;
-    }
-  }, [uploadedImageUrl, book, onBookUpdated]);
 
   // Copy feedback states
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -106,6 +66,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
   // PDF Download States
   const [isDownloadingInterior, setIsDownloadingInterior] = useState(false);
   const [isDownloadingCover, setIsDownloadingCover] = useState(false);
+  const [alertModalMessage, setAlertModalMessage] = useState<string | null>(null);
 
   // Normalize book details puzzles on the fly to avoid crashing on seeded or incomplete books
   const normalizedPuzzles = (book.details.puzzles || []).map((p, idx) => {
@@ -262,6 +223,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
         setTitleColor(newTitle);
         setSubtitleColor(newSub);
         setUploadedImageUrl(dataUrl);
+        setOriginalImageUrl(dataUrl);
         setAnalysisFeedback(feedback);
 
         // Auto update book details
@@ -276,6 +238,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
               titleColor: newTitle,
               subtitleColor: newSub,
               uploadedImageUrl: dataUrl,
+              originalImageUrl: dataUrl,
               analysisResult: feedback,
               imageLayout: detectedLayout
             }
@@ -301,13 +264,15 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
     } catch (err: any) {
       console.error(err);
       setIsAnalyzing(false);
-      alert('AI cover analysis failed. Please verify the image file format and try again.');
+      setAlertModalMessage('AI cover analysis failed. Please verify the image file format and try again.');
     }
   };
 
   const handleCropScreenshot = (top: number, bottom: number) => {
-    if (!uploadedImageUrl) return;
+    const baseImage = originalImageUrl || uploadedImageUrl;
+    if (!baseImage) return;
     setIsCropping(true);
+    setTrimStatus(null);
     const img = new window.Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -327,7 +292,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
         const targetHeight = sourceHeight - cropTopPx - cropBottomPx;
 
         if (targetHeight <= 0) {
-          alert('Crop values are too large. Please adjust sliders.');
+          setAlertModalMessage('Crop values are too large. Please adjust sliders.');
           setIsCropping(false);
           return;
         }
@@ -357,6 +322,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
             cover: {
               ...book.details.cover,
               uploadedImageUrl: croppedDataUrl,
+              originalImageUrl: originalImageUrl,
             }
           }
         };
@@ -377,7 +343,221 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
     img.onerror = () => {
       setIsCropping(false);
     };
-    img.src = uploadedImageUrl;
+    img.src = baseImage;
+  };
+
+  const handleAutoTrim = () => {
+    const baseImage = originalImageUrl || uploadedImageUrl;
+    if (!baseImage) return;
+
+    setIsCropping(true);
+    setTrimStatus(null);
+
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setIsCropping(false);
+          setTrimStatus('Could not read image context.');
+          return;
+        }
+
+        const width = img.width;
+        const height = img.height;
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0);
+
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+
+        // Common mobile screenshot bars won't exceed 25% of top or bottom height
+        const maxScanHeight = Math.floor(height * 0.25);
+
+        const isBorderRow = (y: number): boolean => {
+          let matchCount = 0;
+          let transparentCount = 0;
+          
+          // Sample reference pixel slightly offset from the edge
+          const refX = Math.min(5, width - 1);
+          const refIdx = (y * width + refX) * 4;
+          const refR = data[refIdx];
+          const refG = data[refIdx + 1];
+          const refB = data[refIdx + 2];
+          const refA = data[refIdx + 3];
+
+          const tolerance = 25;
+
+          for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const a = data[idx + 3];
+
+            // If pixel is transparent, count as border background
+            if (a < 15) {
+              transparentCount++;
+              continue;
+            }
+
+            // Calculate color distance (RMS error)
+            const dist = Math.sqrt(
+              (r - refR) * (r - refR) +
+              (g - refG) * (g - refG) +
+              (b - refB) * (b - refB)
+            );
+            if (dist <= tolerance && Math.abs(a - refA) < tolerance) {
+              matchCount++;
+            }
+          }
+
+          // Row is classed as border if >= 85% is solid-color or transparent
+          return (matchCount + transparentCount) / width >= 0.85;
+        };
+
+        let topBorders = 0;
+        for (let y = 0; y < maxScanHeight; y++) {
+          if (isBorderRow(y)) {
+            topBorders = y + 1;
+          } else {
+            break;
+          }
+        }
+
+        let bottomBorders = 0;
+        for (let y = height - 1; y >= height - maxScanHeight; y--) {
+          if (isBorderRow(y)) {
+            bottomBorders = height - y;
+          } else {
+            break;
+          }
+        }
+
+        const topPercent = Math.round((topBorders / height) * 100);
+        const bottomPercent = Math.round((bottomBorders / height) * 100);
+
+        if (topPercent === 0 && bottomPercent === 0) {
+          setTrimStatus('No screenshot borders detected.');
+          setIsCropping(false);
+          return;
+        }
+
+        // Set the sliders
+        setCropTop(topPercent);
+        setCropBottom(bottomPercent);
+        setTrimStatus(`Auto-detected: trimmed ${topPercent}% from top, ${bottomPercent}% from bottom.`);
+
+        // Immediately crop the image with calculated percentages
+        const cropTopPx = Math.floor(height * (topPercent / 100));
+        const cropBottomPx = Math.floor(height * (bottomPercent / 100));
+        const targetHeight = height - cropTopPx - cropBottomPx;
+
+        if (targetHeight <= 0) {
+          setTrimStatus('Error calculating crop dimensions.');
+          setIsCropping(false);
+          return;
+        }
+
+        const cropCanvas = document.createElement('canvas');
+        const cropCtx = cropCanvas.getContext('2d');
+        if (!cropCtx) {
+          setIsCropping(false);
+          return;
+        }
+
+        cropCanvas.width = width;
+        cropCanvas.height = targetHeight;
+
+        cropCtx.drawImage(
+          img,
+          0,
+          cropTopPx,
+          width,
+          targetHeight,
+          0,
+          0,
+          width,
+          targetHeight
+        );
+
+        const croppedDataUrl = cropCanvas.toDataURL('image/jpeg', 0.95);
+        setUploadedImageUrl(croppedDataUrl);
+
+        const updated = {
+          ...book,
+          details: {
+            ...book.details,
+            cover: {
+              ...book.details.cover,
+              uploadedImageUrl: croppedDataUrl,
+              originalImageUrl: originalImageUrl,
+            }
+          }
+        };
+
+        fetch('/api/books', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updated)
+        }).then(() => {
+          onBookUpdated(updated);
+          setIsCropping(false);
+        }).catch((e) => {
+          console.error(e);
+          setIsCropping(false);
+        });
+
+      } catch (err: any) {
+        console.error('Error during Auto-Trim analysis:', err);
+        setTrimStatus('An error occurred during image scanning.');
+        setIsCropping(false);
+      }
+    };
+
+    img.onerror = () => {
+      setTrimStatus('Failed to load image for scanning.');
+      setIsCropping(false);
+    };
+
+    img.src = baseImage;
+  };
+
+  const handleResetCrop = () => {
+    setCropTop(0);
+    setCropBottom(0);
+    setTrimStatus(null);
+    if (originalImageUrl) {
+      setUploadedImageUrl(originalImageUrl);
+      
+      const updated = {
+        ...book,
+        details: {
+          ...book.details,
+          cover: {
+            ...book.details.cover,
+            uploadedImageUrl: originalImageUrl,
+            originalImageUrl: originalImageUrl,
+          }
+        }
+      };
+
+      setIsCropping(true);
+      fetch('/api/books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated)
+      }).then(() => {
+        onBookUpdated(updated);
+        setIsCropping(false);
+      }).catch((e) => {
+        console.error(e);
+        setIsCropping(false);
+      });
+    }
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -440,7 +620,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
           body: JSON.stringify(updatedBook)
         }).then(() => {
           onBookUpdated(updatedBook);
-          alert('Artwork transformed successfully with high-contrast print filters!');
+          setAlertModalMessage('Artwork transformed successfully with high-contrast print filters!');
         });
       }
     }, 1200);
@@ -469,7 +649,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
       link.click();
     } catch (err) {
       console.error('PDF Generation error:', err);
-      alert('Interior PDF compile failed.');
+      setAlertModalMessage('Interior PDF compile failed.');
     }
     setIsDownloadingInterior(false);
   };
@@ -493,7 +673,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
       link.click();
     } catch (err) {
       console.error('Cover Generation error:', err);
-      alert('Cover PDF compile failed.');
+      setAlertModalMessage('Cover PDF compile failed.');
     }
     setIsDownloadingCover(false);
   };
@@ -656,71 +836,589 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
                   </button>
                 </div>
               </div>
-
               {/* GRID WORKSPACE */}
               {activePuzzle && (
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-center justify-center">
                   
-                  {/* Grid Renderer */}
-                  <div className="md:col-span-7 flex justify-center">
-                    <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block">
-                      <div
-                        className="grid gap-1 bg-[#020906] p-2 rounded-2xl"
-                        style={{
-                          gridTemplateColumns: `repeat(${activePuzzle.grid.length}, minmax(0, 1fr))`
-                        }}
-                      >
-                        {activePuzzle.grid.map((row, rIdx) =>
-                          row.map((char, cIdx) => {
-                             const isSol = checkIsSolutionCell(rIdx, cIdx);
-                             return (
-                               <div
-                                 key={`${rIdx}-${cIdx}`}
-                                 className={`w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-xs sm:text-sm font-mono font-bold rounded transition-all duration-200 ${
-                                   isSol
-                                     ? 'bg-emerald-600 text-white shadow shadow-emerald-500/20 scale-105 z-10'
-                                     : 'text-zinc-300 hover:bg-[#04150e]'
-                                 }`}
-                               >
-                                 {char}
-                               </div>
-                             );
-                           })
+                  {/* WORD SEARCH PUZZLE LAYOUT */}
+                  {(!activePuzzle.bookType || activePuzzle.bookType === 'wordsearch') && (
+                    <>
+                      {/* Grid Renderer */}
+                      <div className="md:col-span-7 flex justify-center">
+                        <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block">
+                          <div
+                            className="grid gap-1 bg-[#020906] p-2 rounded-2xl"
+                            style={{
+                              gridTemplateColumns: `repeat(${activePuzzle.grid.length}, minmax(0, 1fr))`
+                            }}
+                          >
+                            {activePuzzle.grid.map((row, rIdx) =>
+                              row.map((char, cIdx) => {
+                                 const isSol = checkIsSolutionCell(rIdx, cIdx);
+                                 return (
+                                   <div
+                                     key={`${rIdx}-${cIdx}`}
+                                     className={`w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-xs sm:text-sm font-mono font-bold rounded transition-all duration-200 ${
+                                       isSol
+                                         ? 'bg-emerald-600 text-white shadow shadow-emerald-500/20 scale-105 z-10'
+                                         : 'text-zinc-300 hover:bg-[#04150e]'
+                                     }`}
+                                   >
+                                     {char}
+                                   </div>
+                                 );
+                               })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Word bank side lists */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Vocabulary Word Bank
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-4 rounded-2xl h-[280px] overflow-y-auto">
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            {activePuzzle.wordBank.map((word, wIdx) => (
+                              <div
+                                key={wIdx}
+                                className={`p-2.5 rounded-xl border font-bold flex items-center gap-2 ${
+                                  showSolutions
+                                    ? 'bg-emerald-500/5 text-[#10B981] border-emerald-500/25'
+                                    : 'bg-[#020906] border-emerald-950/50 text-zinc-300'
+                                }`}
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                                <span className="truncate">{word}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  </div>
+                    </>
+                  )}
 
-                  {/* Word bank side lists */}
-                  <div className="md:col-span-5 space-y-4">
-                    <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
-                      Vocabulary Word Bank
-                    </h5>
-                    <div className="bg-[#04150e] border border-emerald-950/80 p-4 rounded-2xl h-[280px] overflow-y-auto">
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        {activePuzzle.wordBank.map((word, wIdx) => (
+                  {/* CROSSWORD PUZZLE LAYOUT */}
+                  {activePuzzle.bookType === 'crossword' && (
+                    <>
+                      {/* Grid Renderer */}
+                      <div className="md:col-span-7 flex justify-center">
+                        <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block">
                           <div
-                            key={wIdx}
-                            className={`p-2.5 rounded-xl border font-bold flex items-center gap-2 ${
-                              showSolutions
-                                ? 'bg-emerald-500/5 text-[#10B981] border-emerald-500/25'
-                                : 'bg-[#020906] border-emerald-950/50 text-zinc-300'
-                            }`}
+                            className="grid gap-0.5 bg-[#020906] p-2 rounded-2xl border border-emerald-950/40"
+                            style={{
+                              gridTemplateColumns: `repeat(${activePuzzle.grid.length}, minmax(0, 1fr))`
+                            }}
                           >
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                            <span className="truncate">{word}</span>
+                            {activePuzzle.grid.map((row, rIdx) =>
+                              row.map((char, cIdx) => {
+                                const isBlack = char === '#';
+                                // Look up start cell number
+                                const matchingClue = (activePuzzle.clues || []).find(
+                                  c => c.startRow === rIdx && c.startCol === cIdx
+                                );
+                                return (
+                                  <div
+                                    key={`${rIdx}-${cIdx}`}
+                                    className={`w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center relative font-mono font-bold text-xs sm:text-sm rounded-sm border ${
+                                      isBlack
+                                        ? 'bg-[#020906] border-emerald-950/20 text-transparent'
+                                        : 'bg-zinc-50 border-zinc-200 text-zinc-900 shadow-sm'
+                                    }`}
+                                  >
+                                    {!isBlack && matchingClue && (
+                                      <span className="absolute top-0.5 left-0.5 text-[7px] sm:text-[8px] font-sans font-extrabold text-zinc-500 leading-none">
+                                        {matchingClue.number}
+                                      </span>
+                                    )}
+                                    {!isBlack && (showSolutions ? char : '')}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Clues side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Crossword Clues Index
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-4 rounded-2xl h-[280px] overflow-y-auto space-y-4 text-[11px] font-medium leading-relaxed">
+                          <div>
+                            <h6 className="font-extrabold text-[#10B981] mb-1.5 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded bg-emerald-500" />
+                              Across
+                            </h6>
+                            <div className="space-y-1.5">
+                              {(activePuzzle.clues || []).filter(c => c.direction === 'across').map(c => (
+                                <div key={`${c.number}-ac`} className="p-2 bg-[#020906]/80 rounded border border-emerald-950/30 text-zinc-300">
+                                  <span className="font-extrabold text-[#D4AF37] mr-1.5">{c.number}.</span>
+                                  {c.clue}
+                                  {showSolutions && <span className="text-emerald-400 font-mono text-[9px] ml-1.5 font-bold">({c.answer})</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <h6 className="font-extrabold text-[#10B981] mb-1.5 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded bg-emerald-500" />
+                              Down
+                            </h6>
+                            <div className="space-y-1.5">
+                              {(activePuzzle.clues || []).filter(c => c.direction === 'down').map(c => (
+                                <div key={`${c.number}-dn`} className="p-2 bg-[#020906]/80 rounded border border-emerald-950/30 text-zinc-300">
+                                  <span className="font-extrabold text-[#D4AF37] mr-1.5">{c.number}.</span>
+                                  {c.clue}
+                                  {showSolutions && <span className="text-emerald-400 font-mono text-[9px] ml-1.5 font-bold">({c.answer})</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* TRIVIA BOOK LAYOUT */}
+                  {activePuzzle.bookType === 'trivia' && (
+                    <>
+                      {/* Questions area */}
+                      <div className="md:col-span-7 bg-[#04150e] border border-emerald-950/80 p-5 rounded-3xl space-y-4 max-h-[380px] overflow-y-auto">
+                        {(activePuzzle.questions || []).map((q, qIdx) => (
+                          <div key={qIdx} className="p-4 bg-[#020906] border border-emerald-950/60 rounded-2xl text-left">
+                            <h6 className="text-xs sm:text-sm font-black text-white mb-2">{qIdx + 1}. {q.question}</h6>
+                            <div className="grid grid-cols-2 gap-2">
+                              {(q.options || []).map((opt, oIdx) => {
+                                const isCorrect = opt === q.answer;
+                                return (
+                                  <div
+                                    key={oIdx}
+                                    className={`p-2.5 rounded-xl text-[10px] font-bold border transition-all flex items-center gap-2 ${
+                                      showSolutions && isCorrect
+                                        ? 'bg-emerald-500/15 border-emerald-500/40 text-[#10B981]'
+                                        : 'bg-[#04150e]/60 border-emerald-950/50 text-zinc-400'
+                                    }`}
+                                  >
+                                    <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                                      showSolutions && isCorrect ? 'border-emerald-500 bg-emerald-500/20 text-white' : 'border-emerald-950 bg-[#020906]'
+                                    }`}>
+                                      {showSolutions && isCorrect && <span className="text-[7px]">✓</span>}
+                                    </span>
+                                    <span className="truncate">{opt}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         ))}
                       </div>
-                    </div>
 
-                    {activePuzzle.funFact && (
-                      <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
-                        <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
-                        {activePuzzle.funFact}
+                      {/* Side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Trivia Questionnaire Details
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            This publication-ready trivia quiz page includes <span className="text-[#10B981] font-extrabold">{(activePuzzle.questions || []).length} structured multiple-choice questions</span> with rich context.
+                          </p>
+                          <p>
+                            Solutions are fully prepared and cross-referenced with KDP whitepaper margins.
+                          </p>
+                          <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl flex gap-2">
+                            <span className="text-[#10B981] font-bold">ℹ</span>
+                            <p className="text-[10px] text-zinc-400 leading-normal">
+                              Trivia formatting adapts automatically during final high-fidelity KDP PDF interior compile runs.
+                            </p>
+                          </div>
+                        </div>
+
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    </>
+                  )}
+
+                  {/* COLORING BOOK LAYOUT */}
+                  {activePuzzle.bookType === 'coloring' && (
+                    <>
+                      {/* Procedural Vector Preview */}
+                      <div className="md:col-span-7 flex justify-center">
+                        <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block w-full max-w-[320px]">
+                          <div className="aspect-square w-full rounded-2xl bg-zinc-50 border border-zinc-200 p-2 flex items-center justify-center relative overflow-hidden shadow-inner">
+                            <svg viewBox="0 0 100 100" className="w-full h-full text-zinc-900" stroke="currentColor" strokeWidth="0.5" fill="none">
+                              {(() => {
+                                const type = activePuzzle.coloringType || 'geometric';
+                                
+                                if (type === 'mandala') {
+                                  return (
+                                    <g>
+                                      <circle cx="50" cy="50" r="45" />
+                                      <circle cx="50" cy="50" r="35" strokeDasharray="1,1" />
+                                      <circle cx="50" cy="50" r="25" />
+                                      <circle cx="50" cy="50" r="15" />
+                                      {[...Array(16)].map((_, i) => {
+                                        const angle = (i * 360) / 16;
+                                        const rad = (angle * Math.PI) / 180;
+                                        return (
+                                          <g key={i}>
+                                            <line x1="50" y1="50" x2={50 + 45 * Math.cos(rad)} y2={50 + 45 * Math.sin(rad)} strokeWidth="0.25" />
+                                            <circle cx={50 + 30 * Math.cos(rad)} cy={50 + 30 * Math.sin(rad)} r="4" strokeWidth="0.25" />
+                                            <circle cx={50 + 20 * Math.cos(rad)} cy={50 + 20 * Math.sin(rad)} r="2" strokeWidth="0.25" />
+                                          </g>
+                                        );
+                                      })}
+                                    </g>
+                                  );
+                                } else if (type === 'geometric') {
+                                  return (
+                                    <g>
+                                      <rect x="5" y="5" width="90" height="90" rx="4" />
+                                      <line x1="5" y1="5" x2="95" y2="95" />
+                                      <line x1="95" y1="5" x2="5" y2="95" />
+                                      {[...Array(5)].map((_, i) => (
+                                        <rect key={i} x={5 + i * 8} y={5 + i * 8} width={90 - i * 16} height={90 - i * 16} rx="2" />
+                                      ))}
+                                      {[...Array(6)].map((_, i) => (
+                                        <circle key={i} cx="50" cy="50" r={i * 7} />
+                                      ))}
+                                    </g>
+                                  );
+                                } else if (type === 'nature') {
+                                  return (
+                                    <g>
+                                      <circle cx="50" cy="50" r="45" />
+                                      {[...Array(12)].map((_, i) => {
+                                        const angle = (i * 360) / 12;
+                                        const rad = (angle * Math.PI) / 180;
+                                        const cx = 50 + 15 * Math.cos(rad);
+                                        const cy = 50 + 15 * Math.sin(rad);
+                                        return (
+                                          <circle key={i} cx={cx} cy={cy} r="18" strokeWidth="0.3" />
+                                        );
+                                      })}
+                                      <circle cx="50" cy="50" r="10" />
+                                    </g>
+                                  );
+                                } else {
+                                  return (
+                                    <g>
+                                      <rect x="5" y="5" width="90" height="90" />
+                                      {[...Array(10)].map((_, i) => (
+                                        <g key={i}>
+                                          <circle cx={10 + i * 8} cy={10 + i * 8} r={i * 4} />
+                                          <line x1="5" y1={10 + i * 8} x2="95" y2={10 + i * 8} />
+                                          <line x1={10 + i * 8} y1="5" x2={10 + i * 8} y2="95" />
+                                        </g>
+                                      ))}
+                                    </g>
+                                  );
+                                }
+                              })()}
+                            </svg>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Explanatory Sidebar */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Coloring Page Template
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            This page features a stunning <span className="text-[#10B981] font-extrabold capitalize">{activePuzzle.coloringType || 'geometric'} themed vector stencil</span> generated procedurally.
+                          </p>
+                          <p>
+                            All lines are drawn as razor-sharp vectors to guarantee zero bleed and optimal printing quality at a native 300 DPI layout.
+                          </p>
+                          <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl flex gap-2">
+                            <span className="text-[#10B981] font-bold">✓</span>
+                            <p className="text-[10px] text-zinc-400 leading-normal">
+                              Optimized with high contrast ink settings for premium visual stimulation.
+                            </p>
+                          </div>
+                        </div>
+
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* MAZE LAYOUT */}
+                  {activePuzzle.bookType === 'maze' && (
+                    <>
+                      {/* Maze Grid */}
+                      <div className="md:col-span-7 flex justify-center">
+                        <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block">
+                          <div className="relative">
+                            <div
+                              className="grid bg-[#020906] p-2 rounded-2xl border border-emerald-950/40"
+                              style={{
+                                gridTemplateColumns: `repeat(${activePuzzle.grid.length}, minmax(0, 1fr))`,
+                                gap: '1px'
+                              }}
+                            >
+                              {activePuzzle.grid.map((row, rIdx) =>
+                                row.map((char, cIdx) => {
+                                  const isWall = char === '#';
+                                  // Check if cell is in solution path
+                                  const isSolutionPath = showSolutions && activePuzzle.mazeGrid?.path?.some(
+                                    ([pr, pc]) => pr === rIdx && pc === cIdx
+                                  );
+                                  return (
+                                    <div
+                                      key={`${rIdx}-${cIdx}`}
+                                      className={`w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-sm transition-all ${
+                                        isWall
+                                          ? 'bg-zinc-800'
+                                          : isSolutionPath
+                                          ? 'bg-emerald-500 shadow shadow-emerald-500/50'
+                                          : 'bg-zinc-100'
+                                      }`}
+                                    >
+                                      {rIdx === 0 && cIdx === 1 && <span className="text-[9px] font-black text-emerald-700">S</span>}
+                                      {rIdx === activePuzzle.grid.length - 1 && cIdx === row.length - 2 && <span className="text-[9px] font-black text-rose-700">E</span>}
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Maze Exploration
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            Navigate the custom procedurally generated maze starting at <b>Entrance S</b> and completing at <b>Exit E</b>.
+                          </p>
+                          <p>
+                            The maze has been carved using randomized depth-first search (DFS) algorithms, ensuring a unique solution that is perfect for stimulating mental acuity.
+                          </p>
+                        </div>
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* SUDOKU LAYOUT */}
+                  {activePuzzle.bookType === 'sudoku' && (
+                    <>
+                      {/* Sudoku Grid */}
+                      <div className="md:col-span-7 flex justify-center">
+                        <div className="p-4 bg-[#04150e] border border-emerald-950/80 rounded-3xl shadow-md inline-block">
+                          <div
+                            className="grid grid-cols-9 gap-px bg-zinc-400 p-1.5 rounded-2xl border-2 border-zinc-700"
+                            style={{ width: 'fit-content' }}
+                          >
+                            {activePuzzle.sudokuGrid?.grid.map((row, rIdx) =>
+                              row.map((cell, cIdx) => {
+                                const originalVal = cell;
+                                const solutionVal = activePuzzle.sudokuGrid?.solution[rIdx][cIdx];
+                                const isBlank = originalVal === 0;
+                                const borderRight = (cIdx === 2 || cIdx === 5) ? 'border-r-2 border-r-zinc-800' : '';
+                                const borderBottom = (rIdx === 2 || rIdx === 5) ? 'border-b-2 border-b-zinc-800' : '';
+                                
+                                return (
+                                  <div
+                                    key={`${rIdx}-${cIdx}`}
+                                    className={`w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-xs sm:text-sm font-bold bg-zinc-50 text-zinc-900 ${borderRight} ${borderBottom}`}
+                                  >
+                                    {!isBlank ? (
+                                      <span className="text-zinc-900 font-black">{originalVal}</span>
+                                    ) : showSolutions ? (
+                                      <span className="text-emerald-600 font-extrabold">{solutionVal}</span>
+                                    ) : (
+                                      <span className="text-transparent">0</span>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Sudoku Logic Grid
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            Fill the 9x9 grid so that every row, every column, and each of the nine 3x3 sub-grids contain all of the digits from 1 to 9.
+                          </p>
+                          <p>
+                            This puzzle contains a single logical solution with symmetrical spacing optimized for printable reading clarity.
+                          </p>
+                        </div>
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* CRYPTOGRAM LAYOUT */}
+                  {activePuzzle.bookType === 'cryptogram' && (
+                    <>
+                      {/* Cryptogram Box */}
+                      <div className="md:col-span-7 bg-[#04150e] border border-emerald-950/80 p-5 rounded-3xl max-h-[380px] overflow-y-auto">
+                        <div className="flex flex-wrap gap-x-2 gap-y-4 justify-center">
+                          {activePuzzle.cryptogramData?.cipherText.split(' ').map((word, wIdx) => (
+                            <div key={wIdx} className="flex gap-1 bg-[#020906]/60 p-2 rounded-xl border border-emerald-950/40">
+                              {word.split('').map((char, cIdx) => {
+                                const isLetter = char >= 'A' && char <= 'Z';
+                                const matchingIndex = activePuzzle.cryptogramData?.cipherText.indexOf(char) ?? 0;
+                                const originalChar = activePuzzle.cryptogramData?.plainText[matchingIndex] || '';
+                                
+                                return (
+                                  <div key={cIdx} className="flex flex-col items-center w-6 sm:w-7">
+                                    {/* Encrypted letter */}
+                                    <div className="h-6 sm:h-7 flex items-center justify-center font-mono font-black text-xs sm:text-sm text-zinc-100 bg-[#020906] border border-emerald-950 rounded">
+                                      {char}
+                                    </div>
+                                    {/* Solver space / solved letter */}
+                                    <div className="h-5 flex items-end justify-center font-mono text-[10px] sm:text-xs border-b border-zinc-600 w-full mt-1 text-center">
+                                      {isLetter ? (
+                                        showSolutions ? (
+                                          <span className="text-[#10B981] font-black">{originalChar}</span>
+                                        ) : (
+                                          <span className="text-zinc-600 font-black">?</span>
+                                        )
+                                      ) : (
+                                        <span className="text-zinc-400 font-black">{char}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                        {activePuzzle.cryptogramData?.hint && (
+                          <div className="mt-5 p-3.5 bg-[#020906]/80 border border-emerald-950/50 rounded-xl text-left">
+                            <span className="text-[10px] font-black text-[#10B981] uppercase tracking-wider block mb-0.5">Solver Hint:</span>
+                            <p className="text-xs text-zinc-300 leading-normal">{activePuzzle.cryptogramData.hint}</p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Cryptogram Substitution Cipher
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            This puzzle uses a 1-to-1 letter substitution cipher. Each letter of the alphabet has been replaced with a different letter.
+                          </p>
+                          <p>
+                            Analyze frequency, common double-letters, and word structures to decode the hidden thematic quote!
+                          </p>
+                        </div>
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* WORD SCRAMBLE LAYOUT */}
+                  {activePuzzle.bookType === 'wordscramble' && (
+                    <>
+                      {/* Word Scramble Grid */}
+                      <div className="md:col-span-7 bg-[#04150e] border border-emerald-950/80 p-5 rounded-3xl space-y-3 max-h-[380px] overflow-y-auto">
+                        {(activePuzzle.wordScrambleData || []).map((item, idx) => (
+                          <div key={idx} className="p-3 bg-[#020906]/80 border border-emerald-950/40 rounded-xl flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <span className="text-[10px] font-mono font-bold text-[#D4AF37] bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-950/50">
+                                #{idx + 1}
+                              </span>
+                              <div className="space-y-0.5 text-left">
+                                <h6 className="text-xs sm:text-sm font-mono font-black text-zinc-100 tracking-widest uppercase">
+                                  {item.scrambled}
+                                </h6>
+                                <p className="text-[10px] text-zinc-400">{item.hint}</p>
+                              </div>
+                            </div>
+                            
+                            {showSolutions ? (
+                              <div className="text-right flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                                <span className="text-[11px] font-mono font-black text-[#10B981] uppercase tracking-wider">{item.original}</span>
+                                <span className="text-[#10B981] font-bold text-xs">✓</span>
+                              </div>
+                            ) : (
+                              <div className="w-24 border-b border-dashed border-zinc-600 h-6"></div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Side panel */}
+                      <div className="md:col-span-5 space-y-4">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-[#D4AF37]">
+                          Word Scramble Rules
+                        </h5>
+                        <div className="bg-[#04150e] border border-emerald-950/80 p-5 rounded-2xl space-y-3.5 text-xs leading-relaxed text-zinc-300">
+                          <p>
+                            Unravel the jumbled letters to restore the original thematic vocabulary words.
+                          </p>
+                          <p>
+                            Use the provided hints below each jumbled word if you need a conceptual spark!
+                          </p>
+                        </div>
+                        {activePuzzle.funFact && (
+                          <div className="p-3 bg-[#020906] border border-emerald-950/80 rounded-xl text-[10px] text-zinc-400 font-medium leading-relaxed">
+                            <span className="font-extrabold text-[#D4AF37] block mb-0.5">Did you know?</span>
+                            {activePuzzle.funFact}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                 </div>
               )}
@@ -1064,6 +1762,27 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
                         <CheckCircle2 className="w-3 h-3" /> Cover illustration applied.
                       </p>
 
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSimulateArtworkFilters}
+                          disabled={isFiltering}
+                          className="flex-1 py-1.5 px-3 bg-emerald-950/40 hover:bg-emerald-950 border border-emerald-900/30 text-[#10B981] rounded-xl transition text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-50"
+                        >
+                          {isFiltering ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Isolating Background...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
+                              Run Background Removal & AI Upscale
+                            </>
+                          )}
+                        </button>
+                      </div>
+
                       {/* Interactive Crop / Trim Screenshot widget */}
                       <div className="bg-[#020d07] border border-emerald-950/60 p-3 rounded-xl space-y-3">
                         <div className="flex items-center gap-1.5 text-[#D4AF37]">
@@ -1111,24 +1830,35 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
                         <div className="flex gap-2 pt-1">
                           <button
                             type="button"
-                            onClick={() => {
-                              setCropTop(16);
-                              setCropBottom(14);
-                            }}
-                            className="flex-1 py-1.5 px-2 bg-zinc-900 border border-zinc-800 rounded-lg text-[9px] font-black text-zinc-300 uppercase tracking-wider hover:bg-zinc-800 transition text-center"
+                            onClick={handleResetCrop}
+                            disabled={isCropping}
+                            className="flex-1 py-1.5 px-2 bg-zinc-900 border border-zinc-800 rounded-lg text-[9px] font-black text-zinc-300 uppercase tracking-wider hover:bg-zinc-800 transition text-center disabled:opacity-50"
                           >
                             Reset
                           </button>
                           
                           <button
                             type="button"
-                            onClick={() => handleCropScreenshot(16, 14)}
-                            disabled={isCropping}
-                            className="flex-1 py-1.5 px-2 bg-emerald-950/40 border border-emerald-800/40 rounded-lg text-[9px] font-black text-[#10B981] uppercase tracking-wider hover:bg-[#10B981]/15 transition text-center disabled:opacity-50"
+                            onClick={handleAutoTrim}
+                            disabled={isCropping || !uploadedImageUrl}
+                            className="flex-1 py-1.5 px-2 bg-emerald-950/40 border border-emerald-800/40 rounded-lg text-[9px] font-black text-[#10B981] uppercase tracking-wider hover:bg-[#10B981]/15 transition text-center disabled:opacity-50 flex items-center justify-center gap-1"
                           >
+                            {isCropping && trimStatus === null ? (
+                              <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                            ) : null}
                             Quick Auto-Trim
                           </button>
                         </div>
+
+                        {trimStatus && (
+                          <p className={`text-[9px] font-bold p-1.5 rounded text-center border ${
+                            trimStatus.includes('No') 
+                              ? 'bg-amber-950/30 text-amber-400 border-amber-900/30' 
+                              : 'bg-emerald-950/30 text-emerald-400 border-emerald-900/30'
+                          }`}>
+                            {trimStatus}
+                          </p>
+                        )}
 
                         <button
                           type="button"
@@ -1136,7 +1866,7 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
                           onClick={() => handleCropScreenshot(cropTop, cropBottom)}
                           className="w-full py-2 bg-[#10B981] text-zinc-950 rounded-lg text-[10px] font-black uppercase tracking-wider hover:bg-[#10B981]/90 transition text-center flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none"
                         >
-                          {isCropping ? (
+                          {isCropping && trimStatus !== null ? (
                             <>
                               <RefreshCw className="w-3 h-3 animate-spin" />
                               Cropping Image...
@@ -1462,6 +2192,25 @@ export default function BookPreview({ book, currentPlan, onBookUpdated, onBack, 
 
       </div>
 
+      {/* Custom Alert Modal Dialog */}
+      {alertModalMessage && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+          <div className="bg-[#030d08] border border-emerald-900/40 rounded-3xl max-w-sm w-full p-6 text-zinc-100 shadow-2xl relative overflow-hidden animate-in fade-in duration-150 flex flex-col items-center text-center">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-[#D4AF37]"></div>
+            <div className="w-12 h-12 rounded-full bg-emerald-950/40 border border-emerald-900/40 flex items-center justify-center mb-4">
+              <span className="text-[#D4AF37] font-extrabold text-xl">ℹ</span>
+            </div>
+            <h4 className="text-sm font-black text-white uppercase tracking-wider mb-2">Notice</h4>
+            <p className="text-xs text-zinc-400 leading-relaxed mb-6">{alertModalMessage}</p>
+            <button
+              onClick={() => setAlertModalMessage(null)}
+              className="w-full py-2.5 rounded-xl bg-[#D4AF37] hover:bg-[#EAB308] text-[#030805] font-bold transition text-xs"
+            >
+              Okay
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

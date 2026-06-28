@@ -1,8 +1,18 @@
 export interface User {
   uid: string;
   email: string;
-  plan: 'free' | 'creator' | 'publisher';
+  displayName?: string;
+  photoURL?: string;
   createdAt: string;
+  lastLogin?: string;
+  plan: 'free' | 'creator' | 'publisher' | 'admin';
+  enabled?: boolean;
+  role?: 'user' | 'admin';
+  booksCreated?: number;
+  booksDownloaded?: number;
+  lastActivity?: string;
+  notes?: string;
+  usage?: number;
 }
 
 export interface Subscription {
@@ -21,6 +31,16 @@ export interface WordSearchPuzzle {
   solutions: { word: string; startRow: number; startCol: number; endRow: number; endCol: number }[];
   funFact?: string;
   definition?: string;
+  // Production-grade extension fields for other puzzle/book types:
+  bookType?: 'wordsearch' | 'crossword' | 'trivia' | 'coloring' | 'mixed' | 'maze' | 'sudoku' | 'cryptogram' | 'wordscramble';
+  clues?: { direction: 'across' | 'down'; number: number; clue: string; answer: string; startRow: number; startCol: number }[];
+  questions?: { question: string; answer: string; options?: string[]; questionType?: 'multiple' | 'tf' | 'fill' | 'matching'; explanation?: string }[];
+  coloringType?: 'geometric' | 'mandala' | 'nature' | 'abstract';
+  coloringSeed?: number;
+  mazeGrid?: { grid: number[][]; start: [number, number]; end: [number, number]; path?: [number, number][] };
+  sudokuGrid?: { grid: number[][]; solution: number[][] };
+  cryptogramData?: { cipherText: string; plainText: string; hint: string };
+  wordScrambleData?: { original: string; scrambled: string; hint?: string }[];
 }
 
 export interface BookDetails {
@@ -47,6 +67,7 @@ export interface BookDetails {
     subtitleColor: string;
     coverImageUrl?: string; // base64 or url
     uploadedImageUrl?: string;
+    originalImageUrl?: string;
     frontLayout: 'split' | 'centered' | 'full' | 'bento';
     analysisResult?: string;
     imageLayout?: 'full-wrap' | 'front-bg' | 'front-centered';
@@ -57,6 +78,7 @@ export interface BookDetails {
     audience: 'kids' | 'teens' | 'adults' | 'seniors';
     difficulty: 'easy' | 'medium' | 'hard' | 'mixed';
     largePrint: boolean;
+    bookType?: 'wordsearch' | 'crossword' | 'trivia' | 'coloring' | 'mixed' | 'maze' | 'sudoku' | 'cryptogram' | 'wordscramble';
   };
 }
 

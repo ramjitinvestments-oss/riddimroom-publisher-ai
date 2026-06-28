@@ -8,26 +8,59 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 8080;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Ensure data folder exists
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
+// Determine a writable directory and database file path dynamically
+let DATA_DIR = path.join(process.cwd(), 'data');
+let DB_FILE = path.join(DATA_DIR, 'db.json');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  // Verify write permission by attempting to write a tiny test file
+  const testFile = path.join(DATA_DIR, '.write_test');
+  fs.writeFileSync(testFile, 'test');
+  fs.unlinkSync(testFile);
+} catch (e) {
+  console.warn('Local database directory is read-only. Redirecting the database file to /tmp...');
+  DATA_DIR = '/tmp';
+  DB_FILE = path.join(DATA_DIR, 'db.json');
 }
+
+// Global middleware for authorization and usage tracking
+app.use((req, res, next) => {
+  // If request is for /api/*, verify user status and increment usage count
+  if (req.path.startsWith('/api/') && !req.path.startsWith('/api/auth/')) {
+    const uid = getReqUid(req);
+    const db = readDB();
+    const user = db.users?.find((u: any) => u.uid === uid);
+    
+    // Check if account is disabled by administrator
+    if (user && user.enabled === false) {
+      appendLog('warn', `Blocked API access for disabled user: ${user.email}`, 'auth');
+      return res.status(403).json({ error: 'Your account has been disabled by the administrator. Please contact support.' });
+    }
+
+    // Increment usage count for active, non-GET user actions
+    if (user && req.method !== 'GET') {
+      user.usageCount = (user.usageCount || 0) + 1;
+      writeDB(db);
+    }
+  }
+  next();
+});
 
 // Initial seed data structure with rich sample users and books for monitoring
 const initialDB = {
   users: [
-    { uid: 'demo-user', email: 'RamjitInvestments@gmail.com', plan: 'free', createdAt: new Date(Date.now() - 3600000 * 24 * 5).toISOString() },
-    { uid: 'usr_kdp_1', email: 'publisher_kdp_1@gmail.com', plan: 'publisher', createdAt: new Date(Date.now() - 3600000 * 24 * 4).toISOString() },
-    { uid: 'usr_kdp_2', email: 'publisher_kdp_2@gmail.com', plan: 'creator', createdAt: new Date(Date.now() - 3600000 * 24 * 3).toISOString() },
-    { uid: 'usr_kdp_3', email: 'publisher_kdp_3@gmail.com', plan: 'free', createdAt: new Date(Date.now() - 3600000 * 24 * 2).toISOString() },
-    { uid: 'usr_kdp_4', email: 'publisher_kdp_4@gmail.com', plan: 'free', createdAt: new Date(Date.now() - 3600000 * 24 * 1).toISOString() }
+    { uid: 'demo-user', email: 'RamjitInvestments@gmail.com', plan: 'free', enabled: true, usageCount: 45, createdAt: new Date(Date.now() - 3600000 * 24 * 5).toISOString() },
+    { uid: 'usr_kdp_1', email: 'publisher_kdp_1@gmail.com', plan: 'publisher', enabled: true, usageCount: 28, createdAt: new Date(Date.now() - 3600000 * 24 * 4).toISOString() },
+    { uid: 'usr_kdp_2', email: 'publisher_kdp_2@gmail.com', plan: 'creator', enabled: true, usageCount: 17, createdAt: new Date(Date.now() - 3600000 * 24 * 3).toISOString() },
+    { uid: 'usr_kdp_3', email: 'publisher_kdp_3@gmail.com', plan: 'free', enabled: true, usageCount: 6, createdAt: new Date(Date.now() - 3600000 * 24 * 2).toISOString() },
+    { uid: 'usr_kdp_4', email: 'publisher_kdp_4@gmail.com', plan: 'free', enabled: true, usageCount: 0, createdAt: new Date(Date.now() - 3600000 * 24 * 1).toISOString() }
   ],
   subscriptions: [
     { uid: 'demo-user', plan: 'free', stripeCustomerId: 'cus_demo_123', status: 'active', createdAt: new Date().toISOString() },
@@ -414,7 +447,7 @@ app.post('/api/auth/login', (req, res) => {
   if (lowerEmail === 'ramjitinvestments@gmail.com') {
     const isGoogle = google === true || google === 'true';
     const cleanPassword = password ? String(password).trim() : '';
-    if (!isGoogle && cleanPassword !== '112319$') {
+    if (!isGoogle && cleanPassword !== '1123$') {
       appendLog('warn', `Failed admin login attempt for ${email}`, 'auth');
       return res.status(401).json({ error: 'Incorrect administrator password.' });
     }
@@ -422,12 +455,19 @@ app.post('/api/auth/login', (req, res) => {
 
   let user = db.users.find((u: any) => u.email.toLowerCase() === lowerEmail);
   
+  if (user && user.enabled === false) {
+    appendLog('warn', `Blocked login attempt for disabled user: ${lowerEmail}`, 'auth');
+    return res.status(403).json({ error: 'Your account has been disabled by the administrator.' });
+  }
+
   if (!user) {
     // Auto-register style for ease of evaluation and user boarding
     user = {
       uid: lowerEmail === 'ramjitinvestments@gmail.com' ? 'demo-user' : 'usr_' + Math.random().toString(36).substring(2, 9),
       email: lowerEmail,
-      plan: lowerEmail === 'ramjitinvestments@gmail.com' ? 'publisher' : 'free',
+      plan: (process.env.DEVELOPMENT_UNLOCK_ALL === 'true' || lowerEmail === 'ramjitinvestments@gmail.com') ? 'publisher' : 'free',
+      enabled: true,
+      usageCount: 1,
       createdAt: new Date().toISOString()
     };
     db.users.push(user);
@@ -435,11 +475,15 @@ app.post('/api/auth/login', (req, res) => {
     writeDB(db);
   } else {
     // Auto-ensure the administrator email retains publisher subscription access
-    if (lowerEmail === 'ramjitinvestments@gmail.com' && user.plan !== 'publisher') {
+    if (process.env.DEVELOPMENT_UNLOCK_ALL === 'true' || (lowerEmail === 'ramjitinvestments@gmail.com' && user.plan !== 'publisher')) {
       user.plan = 'publisher';
-      writeDB(db);
     }
+    user.usageCount = (user.usageCount || 0) + 1;
     appendLog('info', `User logged in: ${lowerEmail}`, 'auth');
+    writeDB(db);
+  }
+  if (process.env.DEVELOPMENT_UNLOCK_ALL === 'true' && user) {
+    user.plan = 'publisher';
   }
   res.json({ success: true, user });
 });
@@ -454,20 +498,25 @@ app.post('/api/auth/signup', (req, res) => {
 
   if (lowerEmail === 'ramjitinvestments@gmail.com') {
     const cleanPassword = password ? String(password).trim() : '';
-    if (cleanPassword !== '112319$') {
+    if (cleanPassword !== '1123$') {
       return res.status(401).json({ error: 'Incorrect administrator password.' });
     }
   }
 
   const existing = db.users.find((u: any) => u.email.toLowerCase() === lowerEmail);
   if (existing) {
+    if (existing.enabled === false) {
+      return res.status(403).json({ error: 'This account has been disabled by the administrator.' });
+    }
     return res.status(400).json({ error: 'Email already registered' });
   }
 
   const user = {
     uid: lowerEmail === 'ramjitinvestments@gmail.com' ? 'demo-user' : 'usr_' + Math.random().toString(36).substring(2, 9),
     email: lowerEmail,
-    plan: lowerEmail === 'ramjitinvestments@gmail.com' ? 'publisher' : 'free',
+    plan: (process.env.DEVELOPMENT_UNLOCK_ALL === 'true' || lowerEmail === 'ramjitinvestments@gmail.com') ? 'publisher' : 'free',
+    enabled: true,
+    usageCount: 1,
     createdAt: new Date().toISOString()
   };
   db.users.push(user);
@@ -479,6 +528,9 @@ app.post('/api/auth/signup', (req, res) => {
 // --- USER PLAN ENDPOINT ---
 
 app.get('/api/user/plan', (req, res) => {
+  if (process.env.DEVELOPMENT_UNLOCK_ALL === 'true') {
+    return res.json({ plan: 'publisher' });
+  }
   const uid = getReqUid(req);
   const db = readDB();
   const user = db.users.find((u: any) => u.uid === uid);
@@ -487,8 +539,33 @@ app.get('/api/user/plan', (req, res) => {
 
 // --- ADMIN SYSTEM MONITORING ENDPOINTS ---
 
-app.get('/api/admin/users', (req, res) => {
+app.get('/api/user/status', (req, res) => {
+  const uid = getReqUid(req);
   const db = readDB();
+  const user = db.users?.find((u: any) => u.uid === uid);
+  if (!user) {
+    return res.json({ enabled: true, plan: 'free', permissions: { bookGenerator: true, coverGenerator: true, aiCredits: true } });
+  }
+  res.json({
+    enabled: user.enabled !== false,
+    plan: user.plan || 'free',
+    permissions: user.permissions || {
+      bookGenerator: true,
+      coverGenerator: true,
+      aiCredits: true
+    }
+  });
+});
+
+app.get('/api/admin/users', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+  }
+
   const users = db.users || [];
   const books = db.books || [];
   const downloads = db.downloads || [];
@@ -500,9 +577,16 @@ app.get('/api/admin/users', (req, res) => {
       uid: u.uid,
       email: u.email,
       plan: u.plan,
+      enabled: u.enabled !== false, // default to true if not defined
+      usageCount: u.usageCount || (userBooks.length + userDownloads.length + 2),
       createdAt: u.createdAt || new Date().toISOString(),
       booksCount: userBooks.length,
       downloadsCount: userDownloads.length,
+      permissions: u.permissions || {
+        bookGenerator: true,
+        coverGenerator: true,
+        aiCredits: true
+      },
       books: userBooks.map((b: any) => ({
         id: b.id,
         title: b.title,
@@ -515,21 +599,154 @@ app.get('/api/admin/users', (req, res) => {
   res.json(userStats);
 });
 
-app.post('/api/admin/users/:uid/plan', (req, res) => {
-  const { uid } = req.params;
-  const { plan } = req.body;
-  
-  if (!['free', 'creator', 'publisher'].includes(plan)) {
-    return res.status(400).json({ error: 'Invalid plan tier specification.' });
+app.post('/api/admin/users/:uid/toggle', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
   }
 
-  const db = readDB();
+  const { uid } = req.params;
+  const { enabled } = req.body;
   const user = db.users.find((u: any) => u.uid === uid);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
 
-  user.plan = plan;
+  // Prevent primary admin from disabling their own account
+  if (user.email.toLowerCase() === 'ramjitinvestments@gmail.com') {
+    return res.status(400).json({ error: 'You cannot disable the primary administrator account.' });
+  }
+
+  if (enabled !== undefined) {
+    user.enabled = !!enabled;
+  } else {
+    user.enabled = user.enabled === false ? true : false;
+  }
+  
+  appendLog('info', `Admin [ID: ${adminUid}] toggled account access of ${user.email} to: ${user.enabled ? 'ENABLED' : 'DISABLED'}`, 'admin');
+  writeDB(db);
+  res.json({ success: true, enabled: user.enabled });
+});
+
+app.post('/api/admin/users/:uid/usage', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+  }
+
+  const { uid } = req.params;
+  const { usageCount } = req.body;
+
+  const user = db.users.find((u: any) => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  user.usageCount = usageCount;
+  appendLog('info', `Admin [ID: ${adminUid}] manually set usage credits of ${user.email} to: ${usageCount}`, 'admin');
+  writeDB(db);
+  res.json({ success: true, usageCount: user.usageCount });
+});
+
+app.post('/api/admin/users/:uid/permissions', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+  }
+
+  const { uid } = req.params;
+  const { permissions } = req.body;
+
+  const user = db.users.find((u: any) => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  user.permissions = {
+    ...(user.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true }),
+    ...permissions
+  };
+
+  appendLog('info', `Admin [ID: ${adminUid}] modified permissions for ${user.email} to: ${JSON.stringify(user.permissions)}`, 'admin');
+  writeDB(db);
+  res.json({ success: true, permissions: user.permissions });
+});
+
+app.delete('/api/admin/users/:uid', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+  }
+
+  const { uid } = req.params;
+  const user = db.users.find((u: any) => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ error: 'User workspace not found' });
+  }
+
+  // Prevent primary admin from deleting their own account
+  if (user.email.toLowerCase() === 'ramjitinvestments@gmail.com') {
+    return res.status(400).json({ error: 'You cannot delete the primary administrator account.' });
+  }
+
+  const userEmail = user.email;
+
+  // 1. Delete associated books (and their covers, images, assets, etc. since they are embedded)
+  const booksCountBefore = db.books?.length || 0;
+  db.books = (db.books || []).filter((b: any) => b.uid !== uid);
+  const booksDeleted = booksCountBefore - db.books.length;
+
+  // 2. Delete associated downloads
+  const downloadsCountBefore = db.downloads?.length || 0;
+  db.downloads = (db.downloads || []).filter((d: any) => d.uid !== uid);
+  const downloadsDeleted = downloadsCountBefore - db.downloads.length;
+
+  // 3. Delete subscriptions
+  db.subscriptions = (db.subscriptions || []).filter((s: any) => s.uid !== uid);
+
+  // 4. Delete user document
+  db.users = db.users.filter((u: any) => u.uid !== uid);
+
+  appendLog('info', `Admin [ID: ${adminUid}] permanently deleted user workspace of "${userEmail}" [UID: ${uid}] along with ${booksDeleted} books and ${downloadsDeleted} download logs.`, 'admin');
+  writeDB(db);
+  res.json({ success: true, message: 'Workspace deleted successfully.' });
+});
+
+app.post('/api/admin/users/:uid/plan', (req, res) => {
+  const adminUid = getReqUid(req);
+  const db = readDB();
+  const adminUser = db.users?.find((u: any) => u.uid === adminUid);
+  const isAdmin = adminUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com';
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+  }
+
+  const { uid } = req.params;
+  const { plan } = req.body;
+  
+  const cleanPlan = plan ? String(plan).toLowerCase() : '';
+  if (!['free', 'creator', 'publisher', 'admin'].includes(cleanPlan)) {
+    return res.status(400).json({ error: 'Invalid plan tier specification.' });
+  }
+
+  const user = db.users.find((u: any) => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  user.plan = cleanPlan;
   
   // also sync corresponding subscription if it exists, or create one
   const sub = db.subscriptions.find((s: any) => s.uid === uid);
@@ -545,7 +762,7 @@ app.post('/api/admin/users/:uid/plan', (req, res) => {
     });
   }
 
-  appendLog('info', `Admin manually elevated plan for ${user.email} to: ${plan.toUpperCase()}`, 'admin');
+  appendLog('info', `Admin [ID: ${adminUid}] manually elevated plan for ${user.email} to: ${plan.toUpperCase()}`, 'admin');
   writeDB(db);
   res.json({ success: true, plan });
 });
@@ -635,6 +852,12 @@ app.post('/api/books', (req, res) => {
   const book = req.body;
   const uid = getReqUid(req);
   const db = readDB();
+
+  const user = db.users?.find((u: any) => u.uid === uid);
+  const userPermissions = user?.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true };
+  if (userPermissions.bookGenerator === false) {
+    return res.status(403).json({ error: 'Book Generator access is disabled by the administrator.' });
+  }
   
   if (!book.id) {
     book.id = 'book_' + Math.random().toString(36).substring(2, 9);
@@ -658,9 +881,17 @@ app.post('/api/books', (req, res) => {
 
 // --- DUPLICATE BOOK INTERIOR ---
 
-app.post('/api/books/duplicate/:id', (req, res) => {
+const handleDuplicate = (req: any, res: any) => {
   const { id } = req.params;
+  const uid = getReqUid(req);
   const db = readDB();
+
+  const user = db.users?.find((u: any) => u.uid === uid);
+  const userPermissions = user?.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true };
+  if (userPermissions.bookGenerator === false) {
+    return res.status(403).json({ error: 'Book Generator access is disabled by the administrator.' });
+  }
+
   const original = db.books.find((b: any) => b.id === id);
   if (!original) {
     return res.status(404).json({ error: 'Book not found' });
@@ -670,12 +901,16 @@ app.post('/api/books/duplicate/:id', (req, res) => {
   copy.id = 'book_' + Math.random().toString(36).substring(2, 9);
   copy.title = `${copy.title} (Copy)`;
   copy.createdAt = new Date().toISOString();
+  copy.uid = uid; // Ensure cloned book is owned by current requester
 
   db.books.push(copy);
   appendLog('info', `Book duplicated: "${original.title}" duplicated to "${copy.title}"`, 'books');
   writeDB(db);
   res.json(copy);
-});
+};
+
+app.post('/api/books/duplicate/:id', handleDuplicate);
+app.post('/api/books/:id/duplicate', handleDuplicate);
 
 // --- PURGE BOOK INTERIOR ---
 
@@ -714,6 +949,14 @@ app.post('/api/downloads', (req, res) => {
 
 // Category Suggester Route
 app.post('/api/generate-categories', async (req, res) => {
+  const uid = getReqUid(req);
+  const db = readDB();
+  const user = db.users?.find((u: any) => u.uid === uid);
+  const userPermissions = user?.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true };
+  if (userPermissions.bookGenerator === false) {
+    return res.status(403).json({ error: 'Book Generator access is disabled by the administrator.' });
+  }
+
   const { topic, puzzleCount } = req.body;
   if (!topic) {
     return res.status(400).json({ error: 'Topic is required' });
@@ -819,6 +1062,14 @@ Keep category names short (1 to 3 words each). You MUST return exactly ${count} 
 
 // Cover Illustration Image Analyzer Route
 app.post('/api/cover/analyze', async (req, res) => {
+  const uid = getReqUid(req);
+  const db = readDB();
+  const user = db.users?.find((u: any) => u.uid === uid);
+  const userPermissions = user?.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true };
+  if (userPermissions.coverGenerator === false) {
+    return res.status(403).json({ error: 'Cover Generator access is disabled by the administrator.' });
+  }
+
   const { image, mimeType, topic } = req.body;
   if (!image || !mimeType) {
     return res.status(400).json({ error: 'Image data and mimeType are required' });
@@ -909,16 +1160,26 @@ You MUST return a valid JSON object matching the requested schema. Use hex code 
 
 // Full Book Content Generator Route
 app.post('/api/generate-content', async (req, res) => {
-  const { topic, categories, audience, difficulty, trimSize, puzzleCount } = req.body;
+  const uid = getReqUid(req);
+  const db = readDB();
+  const user = db.users?.find((u: any) => u.uid === uid);
+  const userPermissions = user?.permissions || { bookGenerator: true, coverGenerator: true, aiCredits: true };
+  if (userPermissions.bookGenerator === false) {
+    return res.status(403).json({ error: 'Book Generator access is disabled by the administrator.' });
+  }
+
+  const { topic, categories, audience, difficulty, trimSize, puzzleCount, bookType } = req.body;
   if (!topic || !categories || !categories.length) {
     return res.status(400).json({ error: 'Topic and Categories are required' });
   }
 
-  appendLog('info', `Invoking Gemini 3.5 Flash to generate publication text for "${topic}" (Audience: ${audience}, Difficulty: ${difficulty}, Puzzles: ${puzzleCount})`, 'ai');
+  const requestedType = bookType || 'wordsearch';
+
+  appendLog('info', `Invoking Gemini 3.5 Flash to generate publication text for "${topic}" (Type: ${requestedType}, Audience: ${audience}, Difficulty: ${difficulty}, Puzzles: ${puzzleCount})`, 'ai');
 
   // Fallback simulator for complete book details if Gemini fails or is offline
   const simulateBookContent = () => {
-    appendLog('info', 'Serving highly customized content simulation dataset', 'ai');
+    appendLog('info', `Serving highly customized content simulation dataset for bookType: ${requestedType}`, 'ai');
     
     const glossary = categories.map((cat: string) => ({
       word: cat.replace(/\s+/g, '').toUpperCase().substring(0, 8),
@@ -932,30 +1193,69 @@ app.post('/api/generate-content', async (req, res) => {
       `Studies reveal that solving themed puzzles is an amazing tool to reinforce active retention of "${topic}" concepts.`
     ];
 
-    const puzzlesContent = categories.map((cat: string) => {
-      // Create some default words based on topic/category
+    const puzzlesContent = categories.map((cat: string, index: number) => {
+      let currentType = requestedType;
+      if (requestedType === 'mixed') {
+        const types = ['wordsearch', 'crossword', 'trivia', 'coloring', 'maze', 'sudoku', 'cryptogram', 'wordscramble'];
+        currentType = types[index % types.length];
+      }
+
+      // Word search content
       const randomWords = [
         'VIBRANT', 'EXPLORE', 'RIDDIM', 'ROOTS', 'CULTURE', 'WISDOM', 
         'ENERGY', 'PEACE', 'SOUND', 'NATURE', 'JOURNEY', 'CREATIVE',
-        'WISDOM', 'HARMONY', 'BEAUTIFUL', 'SHINE', 'AUTHENTIC', 'PRIDE'
+        'HARMONY', 'BEAUTIFUL', 'SHINE', 'AUTHENTIC', 'PRIDE', 'UNITY'
       ];
-      // pick random 12-15 words
       const shuffled = [...randomWords].sort(() => 0.5 - Math.random());
       const selectedWords = shuffled.slice(0, 12).map(w => w.toUpperCase());
 
+      // Crossword clues & answers
+      const defaultClues = [
+        { clue: 'Dynamic lifestyle energy', answer: 'VIBES' },
+        { clue: 'Musical cadence and drum patterns', answer: 'RIDDIM' },
+        { clue: 'Foundational heritage and lineage', answer: 'ROOTS' },
+        { clue: 'Spiritual understanding and knowledge', answer: 'WISDOM' },
+        { clue: 'Auditory wave transmissions', answer: 'SOUND' },
+        { clue: 'State of mental tranquility and calm', answer: 'PEACE' },
+        { clue: 'Vast biological wilderness environment', answer: 'NATURE' },
+        { clue: 'A sequential traversal through time', answer: 'JOURNEY' }
+      ];
+
+      // Trivia questions
+      const defaultQuestions = [
+        { question: `Which aspect of "${cat}" is considered the most historically significant?`, answer: 'Heritage', options: ['Heritage', 'Modern Era', 'Commercialization', 'Folk Legend'] },
+        { question: `How does "${cat}" primarily influence modern pop culture trends?`, answer: 'Music', options: ['Music', 'Literature', 'Visual Art', 'Fashion Trends'] },
+        { question: `Which geographic region is most famous for its association with "${topic}"?`, answer: 'Caribbean', options: ['Caribbean', 'North Europe', 'Far East Asia', 'East Africa'] },
+        { question: `What is the core philosophical message behind "${cat}" sub-themes?`, answer: 'Unity', options: ['Unity', 'Competition', 'Solitude', 'Industrialization'] }
+      ];
+
+      // Cryptogram phrase
+      const defaultPhrases = [
+        `EXPLORING THE INNER DEPTHS OF ${cat.toUpperCase()} LEADS TO LASTING INTELLECTUAL SATISFACTION AND CREATIVITY.`,
+        `THE SYSTEMATIC STUDY OF ${topic.toUpperCase()} REVEALS THE EXTRAORDINARY DYNAMICS OF ${cat.toUpperCase()} IN MODERN TIMES.`,
+        `NOTHING REPLACES THE PASSIONATE JOURNEY OF DISCOVERING NEW BOUNDARIES WITHIN ${cat.toUpperCase()} AND ITS AMAZING HERITAGE.`
+      ];
+
       return {
         category: cat,
+        bookType: currentType,
         wordBank: selectedWords,
-        definition: `A beautiful puzzle celebrating "${cat}" and surrounding elements.`,
-        funFact: `Did you know? "${cat}" is highly regarded in "${topic}" research circles.`
+        definition: `A beautiful puzzle sheet celebrating "${cat}" and surrounding elements.`,
+        funFact: `Did you know? "${cat}" is highly regarded in "${topic}" research circles.`,
+        clues: defaultClues,
+        questions: defaultQuestions,
+        coloringType: ['geometric', 'mandala', 'nature', 'abstract'][index % 4],
+        cryptogramPhrase: defaultPhrases[index % defaultPhrases.length],
+        cryptogramHint: `A profound insight regarding ${cat}.`,
+        scrambleWords: selectedWords.slice(0, 8)
       };
     });
 
     return {
-      introduction: `Welcome to the Ultimate Word Search Puzzle Book on "${topic}"! This collection is specifically compiled to challenge your brain, relax your mind, and take you on an educational journey. Calibrated perfectly for ${audience} at a ${difficulty} level, you will find high-quality puzzle sheets that are perfect for home, travel, or gifting.`,
+      introduction: `Welcome to the Ultimate ${requestedType.toUpperCase()} Book on "${topic}"! This collection is specifically compiled to challenge your brain, relax your mind, and take you on an educational journey. Calibrated perfectly for ${audience} at a ${difficulty} level, you will find high-quality puzzle sheets that are perfect for home, travel, or gifting.`,
       overview: `"${topic}" is a fascinating area of study with a rich history and a wonderful variety of concepts. In this book, we unpack the most essential terms, phrases, and facts. Perfect for enhancing linguistic skills, short-term memory, and spatial recognition.`,
-      backCoverText: `Are you ready to explore "${topic}" like never before? This carefully crafted word search interior is fully formatted for Amazon KDP with generous margins, a clean grid presentation, and detailed answers. Inside you'll discover:
-• ${categories.length} themed puzzle grids
+      backCoverText: `Are you ready to explore "${topic}" like never before? This carefully crafted interior is fully formatted for Amazon KDP with generous margins, a clean grid presentation, and detailed answers. Inside you'll discover:
+• ${categories.length} themed custom pages
 • Practical terms glossary for quick learning
 • Amazing trivia and fun facts
 • Crisp, clear layouts perfect for all reading levels!`,
@@ -965,12 +1265,12 @@ app.post('/api/generate-content', async (req, res) => {
       glossary,
       puzzlesContent,
       amazonListing: {
-        title: `${topic} Word Search Puzzle Book`,
-        subtitle: `Large Print Themed Puzzles for ${audience} (${difficulty} Level Edition)`,
+        title: `${topic} Premium Activity Book`,
+        subtitle: `Large Print Themed Pages for ${audience} (${difficulty} Level Edition)`,
         description: `Explore the wonderful world of ${topic} with this publication-ready activity workbook! Specially designed with KDP sizing (trim size ${trimSize}), high contrast text, and large print puzzles. Inside, you'll get vocabulary definitions, fun facts, and detailed answer solutions.`,
-        keywords: [topic, 'word search', 'puzzle book', 'KDP publishing', 'brain training', audience, difficulty],
-        categories: ['Non-Fiction / Activity Books', 'Games & Activities / Word Games', 'Education / Workbooks'],
-        marketingCopy: `Boost your cognitive health, relieve stress, and learn all about ${topic} through these beautiful word searches. Perfect for seniors, teens, and puzzle enthusiasts alike!`
+        keywords: [topic, requestedType, 'puzzle book', 'KDP publishing', 'brain training', audience, difficulty],
+        categories: ['Non-Fiction / Activity Books', 'Games & Activities', 'Education / Workbooks'],
+        marketingCopy: `Boost your cognitive health, relieve stress, and learn all about ${topic} through these beautiful activities. Perfect for seniors, teens, and enthusiasts alike!`
       }
     };
   };
@@ -982,24 +1282,34 @@ app.post('/api/generate-content', async (req, res) => {
   try {
     const ai = getGemini();
 
-    const systemPrompt = `You are an expert Amazon KDP Puzzle publisher.
-Generate structured text content for a puzzle book.
+    const systemPrompt = `You are an expert Amazon KDP Puzzle and Activity Book publisher.
+Generate structured text content for a workbook.
 Topic: "${topic}"
 Target Audience: "${audience}"
 Difficulty: "${difficulty}"
 Puzzles requested: ${puzzleCount}
+Book Type: "${requestedType}" (wordsearch, crossword, trivia, coloring, maze, sudoku, cryptogram, wordscramble, or mixed)
 Categories to generate puzzles for: ${JSON.stringify(categories)}
 
 You must return a valid JSON object matching the requested schema. Provide rich, highly interesting, real-world educational vocabularies, definitions, and marketing descriptions. Do not return markdown wraps; just pure JSON.`;
 
-    const userPrompt = `Provide the full interior text data for "${topic}".
+    const userPrompt = `Provide the full interior text data for "${topic}" of type "${requestedType}".
 Include:
 - An introduction and topic overview.
 - A back cover promotional summary.
 - Author bio and Publisher bio.
 - A list of 3 fun facts about the topic.
 - A glossary list mapping key terms with simple definitions and example sentences.
-- For each category inside ${JSON.stringify(categories)}, generate 12-16 thematic uppercase words (min length 3, max length 14, letters only, no symbols, spaces or hyphens). Also include a simple sub-category definition and a related fun fact.
+- For each category inside ${JSON.stringify(categories)}, generate custom thematic data matching the "${requestedType}" requirement:
+  1. If the puzzle type is "wordsearch" or "mixed", generate 12-16 uppercase words.
+  2. If the puzzle type is "crossword" or "mixed", generate 8 to 12 clue-answer pairs (answers should be simple, single uppercase words, length 3 to 10).
+  3. If the puzzle type is "trivia" or "mixed", generate 8 to 10 high-quality multiple choice trivia questions, specifying the question, the correct answer, and an array of 4 randomized options (including the correct one).
+  4. If the puzzle type is "coloring" or "mixed", generate beautiful description prompts and a design style (geometric, mandala, nature, or abstract).
+  5. If the puzzle type is "maze" or "mixed", specify a layout category and basic info.
+  6. If the puzzle type is "sudoku" or "mixed", specify a difficulty or category theme.
+  7. If the puzzle type is "cryptogram" or "mixed", generate a beautiful quote or fact about "${topic}" (plaintext uppercase, letters and punctuation only, 40-100 characters) as "cryptogramPhrase" and a "cryptogramHint".
+  8. If the puzzle type is "wordscramble" or "mixed", generate 8 to 10 thematic uppercase words as "scrambleWords".
+- Also include a simple sub-category definition and a related fun fact for every category.
 - Dynamic Amazon listing metadata: optimized title, subtitle, descriptive summary, keywords, categories, and marketing copy.`;
 
     const result = await generateContentWithRetry(ai, {
@@ -1038,18 +1348,56 @@ Include:
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  category: { type: Type.STRING, description: "The puzzle sub-theme name from the provided list." },
+                  category: { type: Type.STRING, description: "The category sub-theme name from the provided list." },
+                  bookType: { type: Type.STRING, description: "The specific sub-puzzle type (wordsearch, crossword, trivia, coloring, maze, sudoku, cryptogram, wordscramble)" },
                   wordBank: {
                     type: Type.ARRAY,
                     items: { type: Type.STRING },
-                    description: "A list of 12 to 16 highly relevant words for the word search (ALL-CAPS, standard uppercase letters only, no punctuation or spaces)."
+                    description: "List of 12 to 16 uppercase words (for word search grids)."
                   },
                   definition: { type: Type.STRING, description: "A 1-sentence description/theme overview of this sub-category." },
-                  funFact: { type: Type.STRING, description: "A fun fact related specifically to this subcategory." }
+                  funFact: { type: Type.STRING, description: "A fun fact related specifically to this subcategory." },
+                  clues: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        clue: { type: Type.STRING, description: "The crossword clue describing the word." },
+                        answer: { type: Type.STRING, description: "The crossword answer (uppercase, letters only)." }
+                      },
+                      required: ["clue", "answer"]
+                    },
+                    description: "Crossword clue-answer pairs (for crossword puzzles)."
+                  },
+                  questions: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        question: { type: Type.STRING, description: "The multiple choice trivia question text." },
+                        answer: { type: Type.STRING, description: "The correct answer word/phrase." },
+                        options: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                          description: "Exactly 4 options, including the correct answer."
+                        }
+                      },
+                      required: ["question", "answer", "options"]
+                    },
+                    description: "Trivia multiple choice questions list."
+                  },
+                  coloringType: { type: Type.STRING, description: "Recommended coloring style: geometric, mandala, nature, or abstract." },
+                  cryptogramPhrase: { type: Type.STRING, description: "A thematic uppercase sentence to encrypt (40-100 characters)." },
+                  cryptogramHint: { type: Type.STRING, description: "A helpful clue or context hint for solving." },
+                  scrambleWords: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "8 to 10 uppercase vocabulary words for scrambling."
+                  }
                 },
-                required: ["category", "wordBank", "definition", "funFact"]
+                required: ["category", "definition", "funFact"]
               },
-              description: "An array containing thematic wordbanks for each of the requested categories."
+              description: "An array containing thematic content details for each of the requested categories."
             },
             amazonListing: {
               type: Type.OBJECT,

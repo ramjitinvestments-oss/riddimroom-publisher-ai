@@ -1,6 +1,0 @@
-{
-  "name": "RiddimRoom Publisher AI",
-  "description": "Create complete KDP Word Search puzzle books and Amazon listings using AI.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

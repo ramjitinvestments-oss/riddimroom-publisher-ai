@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered user profile and system status document",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique user ID" },
+        "displayName": { "type": "string", "description": "The display name of the user" },
+        "email": { "type": "string", "format": "email", "description": "The user email address" },
+        "photoURL": { "type": "string", "description": "The avatar photo URL" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when the user account was created" },
+        "lastLogin": { "type": "string", "format": "date-time", "description": "Timestamp when the user last logged in" },
+        "plan": { "type": "string", "enum": ["Free", "Creator", "Publisher", "Admin"], "description": "The subscription or system privilege plan of the user" },
+        "enabled": { "type": "boolean", "description": "Whether the user account is enabled" },
+        "role": { "type": "string", "enum": ["user", "admin"], "description": "System role for privilege separation" },
+        "booksCreated": { "type": "integer", "description": "Total number of KDP books created by the user" },
+        "booksDownloaded": { "type": "integer", "description": "Total number of books exported or downloaded by the user" },
+        "lastActivity": { "type": "string", "format": "date-time", "description": "Timestamp of the user's last dynamic interaction" },
+        "notes": { "type": "string", "description": "Admin notes regarding the user account" },
+        "usage": { "type": "integer", "description": "AI generation credits or usage metric" }
+      },
+      "required": ["uid", "email", "plan", "enabled", "role"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Log entry recording administrative or user events",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique log entry ID" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Timestamp of the logged event" },
+        "uid": { "type": "string", "description": "The UID of the user who triggered the event" },
+        "email": { "type": "string", "description": "The email of the user who triggered the event" },
+        "level": { "type": "string", "enum": ["info", "warn", "error"], "description": "The severity level of the event" },
+        "message": { "type": "string", "description": "Detailed log message describing the action" },
+        "category": { "type": "string", "description": "Operational category of the event" },
+        "ip": { "type": "string", "description": "IP address of the client if available" }
+      },
+      "required": ["timestamp", "message", "category"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "Collection of user metadata and configuration records"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Audit trail database recording security and administrative actions"
+    }
+  }
+}

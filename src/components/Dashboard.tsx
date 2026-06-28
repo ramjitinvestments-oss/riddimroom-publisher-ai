@@ -44,9 +44,12 @@ export default function Dashboard({
           <span className="px-3 py-1 bg-[#072316] text-[#10B981] border border-emerald-900/40 font-black text-[10px] uppercase tracking-wider rounded-full shadow-lg">
             Creator Studio
           </span>
-          <h1 className="text-2xl font-black tracking-tight mt-2 flex items-center gap-2 text-white font-sans">
-            Your Publisher Bookshelf <Sparkles className="w-5 h-5 text-[#D4AF37] animate-pulse" />
+          <h1 className="text-2xl font-black tracking-tight mt-2 flex items-center gap-2 text-[#ff0000] font-sans">
+            Publisher AI TEST 123 <Sparkles className="w-5 h-5 text-[#ff0000] animate-pulse" />
           </h1>
+          <p className="text-sm font-semibold text-[#ff0000] tracking-wide">
+            Deployment Verification Build
+          </p>
           <p className="text-xs text-zinc-300 max-w-md leading-relaxed font-medium">
             Design and compile complete, publication-ready KDP paperback interiors, custom cover wrappers, and metadata sheets in minutes using Gemini 3.5 Flash.
           </p>

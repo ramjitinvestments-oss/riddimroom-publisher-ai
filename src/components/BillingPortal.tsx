@@ -18,6 +18,8 @@ export default function BillingPortal({ currentPlan, bookCount, onUpgrade, onClo
   const [cardCvc, setCardCvc] = useState('123');
   const [isProcessing, setIsProcessing] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [showConfirmCancel, setShowConfirmCancel] = useState(false);
+  const [showAlertMessage, setShowAlertMessage] = useState<string | null>(null);
 
   const plans = [
     {
@@ -112,11 +114,12 @@ export default function BillingPortal({ currentPlan, bookCount, onUpgrade, onClo
     }, 1500);
   };
 
-  const handleCancelSubscription = async () => {
-    if (!confirm('Are you sure you want to cancel your premium subscription? Your plan will return to Free at the end of the current billing cycle.')) {
-      return;
-    }
-    
+  const handleCancelSubscription = () => {
+    setShowConfirmCancel(true);
+  };
+
+  const executeCancelSubscription = async () => {
+    setShowConfirmCancel(false);
     try {
       await fetch('/api/billing/cancel', { method: 'POST' });
       await fetch('/api/logs', {
@@ -129,7 +132,7 @@ export default function BillingPortal({ currentPlan, bookCount, onUpgrade, onClo
         })
       });
       onUpgrade('free');
-      alert('Subscription canceled successfully.');
+      setShowAlertMessage('Subscription canceled successfully.');
     } catch (e) {
       console.error(e);
     }
@@ -421,6 +424,50 @@ export default function BillingPortal({ currentPlan, bookCount, onUpgrade, onClo
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* CUSTOM CONFIRM CANCEL DIALOG */}
+        {showConfirmCancel && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+            <div className="bg-[#030d08] border border-red-900/40 rounded-3xl max-w-sm w-full p-6 text-zinc-100 shadow-2xl relative overflow-hidden animate-in fade-in duration-150 flex flex-col items-center text-center">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-red-600"></div>
+              <h4 className="text-sm font-black text-white uppercase tracking-wider mb-2">Cancel Subscription?</h4>
+              <p className="text-xs text-zinc-400 leading-relaxed mb-6">
+                Are you sure you want to cancel your premium subscription? Your plan will return to Free at the end of the current billing cycle.
+              </p>
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => setShowConfirmCancel(false)}
+                  className="flex-1 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white transition text-xs font-bold"
+                >
+                  No, Keep It
+                </button>
+                <button
+                  onClick={executeCancelSubscription}
+                  className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white transition text-xs font-bold"
+                >
+                  Yes, Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CUSTOM ALERT DIALOG */}
+        {showAlertMessage && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+            <div className="bg-[#030d08] border border-emerald-900/40 rounded-3xl max-w-sm w-full p-6 text-zinc-100 shadow-2xl relative overflow-hidden animate-in fade-in duration-150 flex flex-col items-center text-center">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-500"></div>
+              <h4 className="text-sm font-black text-white uppercase tracking-wider mb-2">Success</h4>
+              <p className="text-xs text-zinc-400 leading-relaxed mb-6">{showAlertMessage}</p>
+              <button
+                onClick={() => setShowAlertMessage(null)}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white transition text-xs font-bold"
+              >
+                Okay
+              </button>
+            </div>
+          </div>
+        )}
       </motion.div>
     </div>
   );
